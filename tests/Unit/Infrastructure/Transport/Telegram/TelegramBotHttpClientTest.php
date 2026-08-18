@@ -12,6 +12,7 @@ use App\Infrastructure\Transport\Telegram\Mapper\IncomingTelegramMessageMapper;
 use App\Infrastructure\Transport\Telegram\Mapper\IncomingTelegramUpdateMapper;
 use App\Infrastructure\Transport\Telegram\Mapper\SentTelegramMessageMapper;
 use App\Infrastructure\Transport\Telegram\Mapper\TelegramChatMapper;
+use App\Infrastructure\Transport\Telegram\Mapper\TelegramUserMapper;
 use App\Infrastructure\Transport\Telegram\TelegramBotHttpClient;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversMethod;
@@ -33,15 +34,30 @@ final class TelegramBotHttpClientTest extends TestCase
                     'ok' => true,
                     'result' => [
                         [
-                            'update_id' => 10,
+                            'update_id' => 793810587,
                             'message' => [
-                                'message_id' => 1,
-                                'chat' => ['id' => 42],
-                                'text' => 'hello',
+                                'message_id' => 1220,
+                                'from' => [
+                                    'id' => 455708771,
+                                    'is_bot' => false,
+                                    'first_name' => 'Иван',
+                                    'last_name' => 'Иванов',
+                                    'username' => 'NickName',
+                                    'language_code' => 'ru',
+                                ],
+                                'chat' => [
+                                    'id' => 455708771,
+                                    'first_name' => 'Иван',
+                                    'last_name' => 'Иванов',
+                                    'username' => 'NickName',
+                                    'type' => 'private',
+                                ],
+                                'date' => 1787069706,
+                                'text' => 'Тест',
                             ],
                         ],
                     ],
-                ], JSON_THROW_ON_ERROR),
+                ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
                 ['http_code' => 200],
             ),
         ]);
@@ -50,10 +66,22 @@ final class TelegramBotHttpClientTest extends TestCase
 
         self::assertCount(1, $messages);
         $message = $messages->all()[0];
-        self::assertSame(10, $message->updateId);
-        self::assertSame(42, $message->chatId);
-        self::assertSame(1, $message->messageId);
-        self::assertSame('hello', $message->text);
+        self::assertSame(793810587, $message->updateId);
+        self::assertSame(1220, $message->messageId);
+        self::assertNotNull($message->from);
+        self::assertSame(455708771, $message->from->id);
+        self::assertFalse($message->from->isBot);
+        self::assertSame('Иван', $message->from->firstName);
+        self::assertSame('Иванов', $message->from->lastName);
+        self::assertSame('NickName', $message->from->username);
+        self::assertSame('ru', $message->from->languageCode);
+        self::assertSame(455708771, $message->chat->id);
+        self::assertSame('Иван', $message->chat->firstName);
+        self::assertSame('Иванов', $message->chat->lastName);
+        self::assertSame('NickName', $message->chat->username);
+        self::assertSame('private', $message->chat->type);
+        self::assertSame(1787069706, $message->date);
+        self::assertSame('Тест', $message->text);
     }
 
     public function testGetMessagesSkipsNonMessageUpdates(): void
@@ -71,7 +99,8 @@ final class TelegramBotHttpClientTest extends TestCase
                             'update_id' => 12,
                             'message' => [
                                 'message_id' => 2,
-                                'chat' => ['id' => 7],
+                                'chat' => ['id' => 7, 'type' => 'private'],
+                                'date' => 1,
                                 'text' => 'kept',
                             ],
                         ],
@@ -136,7 +165,16 @@ final class TelegramBotHttpClientTest extends TestCase
                     'ok' => true,
                     'result' => [
                         'message_id' => 99,
-                        'chat' => ['id' => 42],
+                        'from' => [
+                            'id' => 1,
+                            'is_bot' => true,
+                            'first_name' => 'TestBot',
+                        ],
+                        'chat' => [
+                            'id' => 42,
+                            'type' => 'private',
+                        ],
+                        'date' => 1787069706,
                         'text' => 'pong',
                     ],
                 ], JSON_THROW_ON_ERROR),
@@ -146,7 +184,7 @@ final class TelegramBotHttpClientTest extends TestCase
 
         $sent = $this->createClient($httpClient)->sendMessage(42, 'pong');
 
-        self::assertSame(42, $sent->chatId);
+        self::assertSame(42, $sent->chat->id);
         self::assertSame(99, $sent->messageId);
         self::assertSame('pong', $sent->text);
     }
@@ -224,6 +262,7 @@ final class TelegramBotHttpClientTest extends TestCase
         HttpClientInterface $httpClient,
         string $botToken = 'bot-token',
     ): TelegramBotHttpClient {
+        $userMapper = new TelegramUserMapper();
         $chatMapper = new TelegramChatMapper();
 
         return new TelegramBotHttpClient(
@@ -231,10 +270,10 @@ final class TelegramBotHttpClientTest extends TestCase
             $botToken,
             new IncomingTelegramMessageCollectionMapper(
                 new IncomingTelegramUpdateMapper(
-                    new IncomingTelegramMessageMapper($chatMapper),
+                    new IncomingTelegramMessageMapper($userMapper, $chatMapper),
                 ),
             ),
-            new SentTelegramMessageMapper($chatMapper),
+            new SentTelegramMessageMapper($userMapper, $chatMapper),
         );
     }
 }

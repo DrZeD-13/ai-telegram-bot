@@ -8,6 +8,7 @@ use App\Infrastructure\Transport\Telegram\Mapper\IncomingTelegramMessageCollecti
 use App\Infrastructure\Transport\Telegram\Mapper\IncomingTelegramMessageMapper;
 use App\Infrastructure\Transport\Telegram\Mapper\IncomingTelegramUpdateMapper;
 use App\Infrastructure\Transport\Telegram\Mapper\TelegramChatMapper;
+use App\Infrastructure\Transport\Telegram\Mapper\TelegramUserMapper;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversMethod;
 use PHPUnit\Framework\TestCase;
@@ -20,7 +21,7 @@ final class IncomingTelegramMessageCollectionMapperTest extends TestCase
     {
         $mapper = new IncomingTelegramMessageCollectionMapper(
             new IncomingTelegramUpdateMapper(
-                new IncomingTelegramMessageMapper(new TelegramChatMapper()),
+                new IncomingTelegramMessageMapper(new TelegramUserMapper(), new TelegramChatMapper()),
             ),
         );
 
@@ -30,7 +31,8 @@ final class IncomingTelegramMessageCollectionMapperTest extends TestCase
                 'update_id' => 2,
                 'message' => [
                     'message_id' => 4,
-                    'chat' => ['id' => 8],
+                    'chat' => ['id' => 8, 'type' => 'private'],
+                    'date' => 1,
                     'text' => 'ok',
                 ],
             ],
@@ -44,7 +46,7 @@ final class IncomingTelegramMessageCollectionMapperTest extends TestCase
     {
         $mapper = new IncomingTelegramMessageCollectionMapper(
             new IncomingTelegramUpdateMapper(
-                new IncomingTelegramMessageMapper(new TelegramChatMapper()),
+                new IncomingTelegramMessageMapper(new TelegramUserMapper(), new TelegramChatMapper()),
             ),
         );
 

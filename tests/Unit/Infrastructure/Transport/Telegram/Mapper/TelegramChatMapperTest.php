@@ -14,24 +14,44 @@ use PHPUnit\Framework\TestCase;
 #[CoversMethod(TelegramChatMapper::class, 'map')]
 final class TelegramChatMapperTest extends TestCase
 {
-    public function testMapReturnsIntegerChatId(): void
+    public function testMapBuildsChatFromTelegramPayload(): void
     {
-        $chatId = (new TelegramChatMapper())->map(['id' => 42]);
+        $chat = (new TelegramChatMapper())->map([
+            'id' => 455708771,
+            'first_name' => 'Павел',
+            'last_name' => 'Наумов',
+            'username' => 'DrZeD13',
+            'type' => 'private',
+        ]);
 
-        self::assertSame(42, $chatId);
+        self::assertSame(455708771, $chat->id);
+        self::assertSame('private', $chat->type);
+        self::assertNull($chat->title);
+        self::assertSame('Павел', $chat->firstName);
+        self::assertSame('Наумов', $chat->lastName);
+        self::assertSame('DrZeD13', $chat->username);
+        self::assertNull($chat->isForum);
+        self::assertNull($chat->isDirectMessages);
     }
 
     public function testMapReturnsStringChatId(): void
     {
-        $chatId = (new TelegramChatMapper())->map(['id' => '-100123']);
+        $chat = (new TelegramChatMapper())->map([
+            'id' => '-100123',
+            'type' => 'supergroup',
+        ]);
 
-        self::assertSame('-100123', $chatId);
+        self::assertSame('-100123', $chat->id);
+        self::assertNull($chat->title);
+        self::assertNull($chat->firstName);
+        self::assertNull($chat->lastName);
+        self::assertNull($chat->username);
     }
 
     public function testMapThrowsWhenIdIsMissing(): void
     {
         $this->expectException(TelegramBotTransportException::class);
 
-        (new TelegramChatMapper())->map([]);
+        (new TelegramChatMapper())->map(['type' => 'private']);
     }
 }
