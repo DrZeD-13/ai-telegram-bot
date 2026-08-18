@@ -29,6 +29,38 @@ src/
 
 Новые каталоги в корне `src/` не заводятся без явной причины. Технические исключения Symfony (`Kernel`) — единственный код вне четырёх слоёв.
 
+## Структура `tests/`
+
+Тесты лежат в корне репозитория в `tests/`, отдельно от `src/`. Два корня по типу проверки:
+
+| Тип | Каталог | Назначение |
+|-----|---------|------------|
+| Unit | `tests/Unit/` | Изолированные тесты класса (моки HTTP/БД, без ядра Symfony) |
+| Functional | `tests/Functional/` | Тесты с контейнером/ядром, HTTP-слоем приложения, реальной интеграцией внутри процесса |
+
+Путь **внутри** `Unit/` или `Functional/` совпадает с путём покрываемого класса относительно `src/`. Имя файла — `{ClassName}Test.php`. Namespace зеркалит PSR-4 `App\Tests\` → `tests/`.
+
+Класс `App\Infrastructure\Transport\Telegram\TelegramBotHttpClient` (`src/Infrastructure/Transport/Telegram/TelegramBotHttpClient.php`):
+
+- unit: `tests/Unit/Infrastructure/Transport/Telegram/TelegramBotHttpClientTest.php` → `App\Tests\Unit\Infrastructure\Transport\Telegram\TelegramBotHttpClientTest`
+- functional (если нужен): `tests/Functional/Infrastructure/Transport/Telegram/TelegramBotHttpClientTest.php` → `App\Tests\Functional\Infrastructure\Transport\Telegram\TelegramBotHttpClientTest`
+
+То же для Application, Domain, Presentation и для `Kernel`: `src/Kernel.php` → `tests/Unit/KernelTest.php`. Не класть тесты в «кучу» в корне `tests/`, не сокращать и не переименовывать промежуточные каталоги.
+
+```
+tests/
+  Unit/
+    Application/
+    Domain/
+    Infrastructure/
+    Presentation/
+  Functional/
+    Application/
+    Domain/
+    Infrastructure/
+    Presentation/
+```
+
 ## Слои
 
 ### Application
