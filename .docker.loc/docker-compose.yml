@@ -1,0 +1,49 @@
+name: ${SERVICE_NAME}
+
+services:
+  nginx:
+    restart: unless-stopped
+    container_name: ${SERVICE_NAME}_nginx
+    build:
+      context: ./context
+      dockerfile: images/nginx/Dockerfile
+      args:
+        PHP_FPM_SERVICE_NAME: php
+    ports:
+      - ${NGINX_PORT}:80
+    volumes:
+      - ../:/var/www
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - php
+
+  php:
+    restart: unless-stopped
+    container_name: ${SERVICE_NAME}_php
+    build:
+      context: ./context
+      dockerfile: images/php-fpm/dev/Dockerfile
+    environment:
+      PHP_IDE_CONFIG: serverName=php-fpm
+    volumes:
+      - ../:/var/www
+    working_dir: /var/www/
+    depends_on:
+      - mysql
+
+  mysql:
+    restart: unless-stopped
+    container_name: ${SERVICE_NAME}_mysql
+    build:
+      context: ./context
+      dockerfile: images/mysql/Dockerfile
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      - ./conf/mysql/initdb:/docker-entrypoint-initdb.d
+    ports:
+      - ${MYSQL_PORT}:3306
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}

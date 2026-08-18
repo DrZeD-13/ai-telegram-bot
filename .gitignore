@@ -4,12 +4,13 @@
 /.env.local
 /.env.local.php
 /.env.*.local
+/config/secrets/prod/prod.decrypt.private.php
 /public/bundles/
 /var/
 /vendor/
+###< symfony/framework-bundle ###
 /.docker.loc/data
 /.docker.loc/logs
-###< symfony/framework-bundle ###
 
 # macOS
 .DS_Store
