@@ -41,6 +41,9 @@ class JsonPrettyDriver implements Driver
         if (is_string($actual)) {
             $actual = json_decode($actual, false, 512, JSON_THROW_ON_ERROR);
         }
+        if (!is_string($expected)) {
+            throw new JsonException('Expected snapshot payload must be a JSON string.');
+        }
         $expected = json_decode($expected, false, 512, JSON_THROW_ON_ERROR);
 
         Assert::assertJsonStringEqualsJsonString(

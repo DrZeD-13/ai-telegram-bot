@@ -8,9 +8,15 @@
 /public/bundles/
 /var/
 /vendor/
+/config/reference.php
 ###< symfony/framework-bundle ###
 /.docker.loc/data
 /.docker.loc/logs
 
 # macOS
 .DS_Store
+
+###> phpunit/phpunit ###
+/phpunit.xml
+/.phpunit.cache/
+###< phpunit/phpunit ###

@@ -61,9 +61,28 @@ The bot API token MUST be read from the environment variable `TELEGRAM_BOT_TOKEN
 - **WHEN** retrieve or send is invoked and `TELEGRAM_BOT_TOKEN` is empty or unset
 - **THEN** the system does not call Telegram with an empty credential and reports a configuration error
 
+### Requirement: Bot API host from environment
+
+The Bot API origin MUST be read from the environment variable `TELEGRAM_API_HOST`. Requests MUST use a scoped Symfony HttpClient bound to that origin and MUST call relative paths (not an absolute host hardcoded in PHP). The committed env templates MUST declare `TELEGRAM_API_HOST` without a live stand URL. Host and token MUST be separate variables.
+
+#### Scenario: Host is configured via env
+
+- **WHEN** `TELEGRAM_API_HOST` is set to a Bot API origin
+- **THEN** retrieve and send operations call that origin with relative Bot API paths
+
+#### Scenario: Committed files have no live host
+
+- **WHEN** a developer inspects committed `.env` / env examples
+- **THEN** `TELEGRAM_API_HOST` is present as an empty or placeholder value
+
+#### Scenario: Paths are relative to the scoped client
+
+- **WHEN** the client retrieves or sends a message
+- **THEN** the HTTP request URI is relative to `TELEGRAM_API_HOST` and does not embed a hardcoded `https://api.telegram.org` in PHP
+
 ### Requirement: Bot API errors surface to the caller
 
-When Telegram responds with a transport failure or with `ok` equal to false, the system MUST fail the operation with an error that includes the API description when present. Partial or silent success MUST NOT be reported.
+When Telegram responds with a transport failure or with `ok` equal to false, the system MUST fail the operation with an error that includes the API description when present. Partial or silent success MUST NOT be reported. Failures that cross the Application port MUST be types that extend `CoreException` and MUST be declared on the port. HttpClient, JSON, and `\Error` MUST NOT leak through the port.
 
 #### Scenario: API returns ok false
 
@@ -75,14 +94,38 @@ When Telegram responds with a transport failure or with `ok` equal to false, the
 - **WHEN** the HTTP request to Telegram cannot complete (timeout, connection error, or non-success HTTP status)
 - **THEN** the operation fails and does not return a message collection or sent message
 
-### Requirement: Tests mirror production class paths
+#### Scenario: Unexpected errors are wrapped
 
-Automated tests MUST live under `tests/Unit/` or `tests/Functional/`. The directory path after that root MUST match the production class path under `src/`. The test class MUST be named `{ClassName}Test`. Unit tests of the Bot API HTTP client MUST use this layout. This change MUST add unit tests for the client; it MUST NOT place those tests in `tests/Functional/` unless the test boots the application kernel.
+- **WHEN** retrieve or send hits an unexpected throwable (including HTTP client or JSON failures)
+- **THEN** the caller receives a port exception that extends `CoreException`, with the original throwable as `previous`
+
+### Requirement: External payloads are mapped by Mapper types
+
+Conversion from Telegram JSON into Application DTOs MUST be done by classes named with postfix `Mapper` and a method `map`, living under the Telegram transport. Nested objects MUST use a dedicated mapper rather than copying fields in several places. Mapper constructors MUST NOT depend on HttpClient, env, logger, or cache.
+
+#### Scenario: Client does not inline nested mapping
+
+- **WHEN** getUpdates or sendMessage succeeds with a JSON payload
+- **THEN** Application DTOs are produced via `Mapper::map`, not by assembling nested fields inside the HTTP client
+
+### Requirement: Tests follow project test conventions
+
+Automated tests MUST follow `docs/testing.md`. They MUST live under `tests/Unit/` or `tests/Functional/` with a path after that root matching the production class under `src/`. The test class MUST be named `{ClassName}Test`. Each test class MUST declare coverage with `CoversClass` and `CoversMethod` for every production method it exercises. This change MUST add unit tests for the Bot API HTTP client and for each new mapper, and MUST NOT place those tests in `tests/Functional/` unless the test boots the application kernel. A functional test of an HTTP endpoint MUST compare the response body to a JSON snapshot via `JsonPrettyMatchesSnapshots` (this change does not add such an endpoint test).
 
 #### Scenario: Unit test path matches the HTTP client
 
 - **WHEN** a unit test covers the Telegram Bot HTTP client class
 - **THEN** the file is `tests/Unit/Infrastructure/Transport/Telegram/{ClassName}Test.php` where `{ClassName}` is the production class name
+
+#### Scenario: Coverage names the class and methods
+
+- **WHEN** a developer inspects the Bot API HTTP client unit test
+- **THEN** the test class declares coverage of that production class and of `getMessages` and `sendMessage`
+
+#### Scenario: Mapper tests mirror mapper classes
+
+- **WHEN** a unit test covers a Telegram transport mapper
+- **THEN** the file is `tests/Unit/Infrastructure/Transport/Telegram/Mapper/{ClassName}Test.php` and declares `CoversClass` / `CoversMethod` for `map`
 
 #### Scenario: Tests are not dumped at tests root
 

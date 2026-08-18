@@ -9,3 +9,7 @@ parameters:
         - config/
         - src/
         - tests/
+    ignoreErrors:
+        -
+            identifier: trait.unused
+            path: tests/System/Trait/*

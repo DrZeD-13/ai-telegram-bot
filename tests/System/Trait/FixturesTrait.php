@@ -10,7 +10,7 @@ use Doctrine\Common\DataFixtures\Purger\ORMPurger;
 use Symfony\Component\DependencyInjection\Container;
 
 /**
- * @method static Container getContainer
+ * @method static Container getContainer()
  */
 trait FixturesTrait
 {

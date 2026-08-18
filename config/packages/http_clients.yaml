@@ -1,0 +1,21 @@
+framework:
+    http_client:
+        max_host_connections: 10
+        default_options:
+            headers:
+                Accept: 'application/json'
+                'Content-Type': 'application/json'
+                'Cache-Control': 'no-cache'
+            timeout: 3
+            retry_failed:
+                http_codes:
+                    0: [ 'GET', 'HEAD' ]
+                    429: true
+                    500: [ 'GET', 'HEAD' ]
+                max_retries: 2
+                multiplier: 3
+                max_delay: 2000
+                jitter: 0.3
+        scoped_clients:
+            telegram:
+                base_uri: '%env(resolve:TELEGRAM_API_HOST)%'

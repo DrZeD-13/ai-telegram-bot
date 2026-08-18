@@ -1,21 +1,22 @@
 ## Why
 
-Приложение — Telegram-бот, но в Infrastructure ещё нет HTTP-клиента Bot API. Сценарии Application не могут получать входящие сообщения и отвечать в чат, не связываясь напрямую с HTTP и токеном. Нужен изолированный транспортный клиент как первая интеграция с Telegram.
+Приложение — Telegram-бот, но в Infrastructure ещё нет HTTP-клиента Bot API, соответствующего правилам исходящего HTTP (`docs/http-clients.md`). Сценарии Application не могут получать входящие сообщения и отвечать в чат, не связываясь напрямую с HTTP, хостом и токеном. Нужен изолированный транспортный клиент как первая интеграция с Telegram.
 
 ## What Changes
 
 - Добавить HTTP-клиент Telegram Bot API в `src/Infrastructure/Transport/Telegram`.
-- Реализовать два метода: получить входящие сообщения (`getUpdates`) — результат метода есть коллекция полученных сообщений — и отправить текстовое сообщение (`sendMessage`).
-- Использовать только `Symfony\Contracts\HttpClient\HttpClientInterface` (пакет `symfony/http-client`).
-- Вынести токен бота в переменную окружения; не хранить секрет в коде и в закоммиченных значениях.
-- Описать порт в Application, чтобы Presentation и сценарии не зависели от Infrastructure.
-- Покрыть клиент unit-тестами: путь в `tests/Unit/` совпадает с путём класса в `src/` (`docs/architecture.md`).
+- Реализовать два метода: получить входящие сообщения (`getUpdates`) — результат есть коллекция полученных сообщений — и отправить текстовое сообщение (`sendMessage`).
+- Использовать только scoped `HttpClientInterface` (`#[Target('telegram')]`, пакет `symfony/http-client`).
+- Вынести origin в `TELEGRAM_API_HOST` и токен в `TELEGRAM_BOT_TOKEN`; не хардкодить хост и не хранить секрет в коде / закоммиченных значениях.
+- Описать порт в Application; исключения порта наследуют `CoreException`.
+- Маппить ответы Bot API через `*Mapper`.
+- Покрыть клиент и mapper’ы unit-тестами по `docs/testing.md`.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `telegram-bot-http-client`: транспортный клиент Bot API — получение обновлений/сообщений и отправка текста, токен из env, Symfony HttpClient.
+- `telegram-bot-http-client`: транспортный клиент Bot API — получение обновлений/сообщений и отправка текста, хост и токен из env, scoped Symfony HttpClient.
 
 ### Modified Capabilities
 
@@ -23,8 +24,8 @@
 
 ## Impact
 
-- Новые классы: порт Application, реализация в `App\Infrastructure\Transport\Telegram`, DTO/коллекции ответов.
-- Зависимость: `symfony/http-client`.
-- Конфигурация: `TELEGRAM_BOT_TOKEN` в `.env` (пустое значение / placeholder); в конструктор клиента — `#[Autowire('%env(TELEGRAM_BOT_TOKEN)%')]`.
-- Тесты: `tests/Unit/Infrastructure/Transport/Telegram/` (зеркало `src/...`); functional для этого клиента не обязательны.
+- Новые/изменённые классы: порт Application, `TelegramBotHttpClient`, `ApiUrlEnum`, mapper’ы, `CoreException`.
+- Зависимость: `symfony/http-client` (уже добавлена).
+- Конфигурация: `TELEGRAM_API_HOST`, `TELEGRAM_BOT_TOKEN`; `config/packages/http_clients.yaml` (scoped `telegram`).
+- Тесты: `tests/Unit/Infrastructure/Transport/Telegram/` (+ `Mapper/`); coverage-атрибуты. Functional HTTP + snapshot для этого клиента не обязательны. Правила — `docs/testing.md`.
 - Вне scope: webhook, polling-цикл, команды бота, обработка callback/media, UI Presentation.

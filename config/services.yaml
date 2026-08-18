@@ -22,5 +22,14 @@ services:
             - '../src/Domain/Entity/'
             - '../src/Kernel.php'
 
+    App\Application\Logger\LoggerService:
+        arguments:
+            $logger: '@monolog.logger'
+        public: true
+
+    Psr\Log\LoggerInterface:
+        alias: App\Application\Logger\LoggerService
+        public: true
+
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

@@ -16,10 +16,17 @@ Presentation  →  Application  →  Domain
 src/
   Kernel.php
   Application/
+    Core/
+      Logger/
+    Port/
+    Dto/
+    Exception/
   Domain/
     Entity/
+    Exception/
   Infrastructure/
     Persistence/
+    Transport/
     ...
   Presentation/
     Http/
@@ -29,37 +36,7 @@ src/
 
 Новые каталоги в корне `src/` не заводятся без явной причины. Технические исключения Symfony (`Kernel`) — единственный код вне четырёх слоёв.
 
-## Структура `tests/`
-
-Тесты лежат в корне репозитория в `tests/`, отдельно от `src/`. Два корня по типу проверки:
-
-| Тип | Каталог | Назначение |
-|-----|---------|------------|
-| Unit | `tests/Unit/` | Изолированные тесты класса (моки HTTP/БД, без ядра Symfony) |
-| Functional | `tests/Functional/` | Тесты с контейнером/ядром, HTTP-слоем приложения, реальной интеграцией внутри процесса |
-
-Путь **внутри** `Unit/` или `Functional/` совпадает с путём покрываемого класса относительно `src/`. Имя файла — `{ClassName}Test.php`. Namespace зеркалит PSR-4 `App\Tests\` → `tests/`.
-
-Класс `App\Infrastructure\Transport\Telegram\TelegramBotHttpClient` (`src/Infrastructure/Transport/Telegram/TelegramBotHttpClient.php`):
-
-- unit: `tests/Unit/Infrastructure/Transport/Telegram/TelegramBotHttpClientTest.php` → `App\Tests\Unit\Infrastructure\Transport\Telegram\TelegramBotHttpClientTest`
-- functional (если нужен): `tests/Functional/Infrastructure/Transport/Telegram/TelegramBotHttpClientTest.php` → `App\Tests\Functional\Infrastructure\Transport\Telegram\TelegramBotHttpClientTest`
-
-То же для Application, Domain, Presentation и для `Kernel`: `src/Kernel.php` → `tests/Unit/KernelTest.php`. Не класть тесты в «кучу» в корне `tests/`, не сокращать и не переименовывать промежуточные каталоги.
-
-```
-tests/
-  Unit/
-    Application/
-    Domain/
-    Infrastructure/
-    Presentation/
-  Functional/
-    Application/
-    Domain/
-    Infrastructure/
-    Presentation/
-```
+Тесты: каталоги, coverage, snapshots и скелеты — в [testing.md](testing.md). Исходящие HTTP-клиенты внешних сервисов — в [http-clients.md](http-clients.md). Исключения — в [exceptions.md](exceptions.md). Преобразование DTO / API — в [mappers.md](mappers.md). Логи — в [logging.md](logging.md).
 
 ## Слои
 
@@ -77,11 +54,11 @@ tests/
 
 `Domain/Entity` — это доменные объекты (по сути доменные DTO). Persistence возвращает именно их: репозиторий в Infrastructure гидратит `Domain/Entity`, Application **может прокинуть эти entity выше в Presentation** без промежуточного маппинга. То же для value objects и прочих типов Domain.
 
-Application **не** отдаёт наружу объекты Infrastructure (клиенты, ORM-специфичные обёртки, поисковые хиты «как пришли из драйвера») и **не** знает о response-моделях Presentation. Если для сценария нужна проекция, которой нет в домене, Application вводит свой сервисный DTO.
+Application **не** отдаёт наружу объекты Infrastructure (клиенты, ORM-специфичные обёртки, поисковые хиты «как пришли из драйвера») и **не** знает о response-моделях Presentation. Если для сценария нужна проекция, которой нет в домене, Application вводит свой сервисный DTO. Исключения сценариев и портов — [exceptions.md](exceptions.md).
 
 ### Domain
 
-Бизнес-правила и модель: сущности, value objects, доменные сервисы, доменные исключения, интерфейсы репозиториев и прочих портов, которые являются частью домена. Entity в `Domain/Entity` — каноническое представление данных домена; их можно передавать из Infrastructure через Application в Presentation.
+Бизнес-правила и модель: сущности, value objects, доменные сервисы, интерфейсы репозиториев и прочих портов, которые являются частью домена. Исключения домена — `CoreException` и наследники, см. [exceptions.md](exceptions.md). Entity в `Domain/Entity` — каноническое представление данных домена; их можно передавать из Infrastructure через Application в Presentation.
 
 **По умолчанию домен ни от чего не зависит** (ни от Application, ни от Infrastructure, ни от Presentation).
 
@@ -98,7 +75,7 @@ Application **не** отдаёт наружу объекты Infrastructure (к
 | Репозитории и сопутствующее | `Infrastructure/Persistence/` | `Repository/`, `Service/`, `Trait/` |
 | Elasticsearch | `Infrastructure/Elasticsearch/` | клиент, мапперы, запросы |
 | OpenSearch | `Infrastructure/OpenSearch/` | клиент, мапперы, запросы |
-| HTTP/внешние API | отдельная папка по системе | например `Infrastructure/Telegram/` |
+| HTTP/внешние API | `Infrastructure/Transport/{System}/` | клиент, enum URL; правила — [http-clients.md](http-clients.md) |
 
 Новая интеграция = новая папка внутри Infrastructure, внутри неё — привычные типы (`Client`, `Repository`, `Mapper`, `Service`, `Trait`).
 
@@ -117,9 +94,9 @@ Infrastructure **может** зависеть от Domain и Application (ре�
 
 **Запрещено:** зависеть от Infrastructure; обращаться к репозиториям, EntityManager, поисковым клиентам и любым инфраструктурным сервисам напрямую.
 
-Данные в Presentation приходят **только из Application**: доменные entity/VO и/или сервисные DTO (и коллекции). Response/view-модели канала собираются **в этом слое** фабриками или билдерами (`Presentation/Http/...`) из того, что вернул Application. Entity можно читать и маппить в ответ; нельзя тащить в HTTP/CLI «как есть», если формат ответа специфичен для канала.
+Данные в Presentation приходят **только из Application**: доменные entity/VO и/или сервисные DTO (и коллекции). Response/view-модели канала собираются **в этом слое mapper’ами** (`Presentation/Http/Mapper/`) из того, что вернул Application — [mappers.md](mappers.md). Entity можно читать и маппить в ответ; нельзя тащить в HTTP/CLI «как есть», если формат ответа специфичен для канала.
 
-Контроллер/команда: принять вход → вызвать сервис Application → из entity и/или сервисного DTO собрать DTO ответа → отдать пользователю.
+Контроллер/команда: принять вход → mapper в Application DTO при необходимости → вызвать сервис Application → mapper в DTO ответа → отдать пользователю.
 
 ## DTO и коллекции
 
@@ -144,6 +121,28 @@ class YourDtoCollection
 
 Одиночный объект возвращается как объект, не как массив из одного элемента.
 
+## Исключения и `@throws`
+
+Любой метод, который может выбросить исключение (`throw` или проброс из вызываемого кода, который метод не перехватывает), **обязан** объявить это в PHPDoc: `@throws` с конкретным типом. Несколько типов — несколько строк `@throws`. Без аннотации исключение из метода выпускать нельзя.
+
+```php
+/**
+ * @throws NotFoundException
+ * @throws TelegramBotTransportException
+ */
+public function execute(int $chatId): SentTelegramMessage
+{
+}
+```
+
+Какие типы допустимы на каком слое и что писать на порте — [exceptions.md](exceptions.md). Не ставить `@throws \Throwable` / `@throws \Exception` «на всякий случай», если метод эти типы сам не бросает как контракт.
+
+## Deprecated API
+
+Не вызывать deprecated-методы (и не опираться на deprecated-классы, параметры, конфиг) фреймворка, библиотек и своего кода. Брать актуальную замену из документации / changelog пакета.
+
+Исключение — только если **нет альтернативы**: замены ещё нет, или она недоступна на зафиксированной версии зависимости. Тогда вызов допустим; когда альтернатива появится, deprecated-использование убрать.
+
 ## Правила зависимостей (кратко)
 
 | Слой | Может зависеть от |
@@ -161,4 +160,8 @@ class YourDtoCollection
 - Команды `bin/console` приложения объявляются в `Presentation/Console`.
 - Doctrine mapping указывает на `Domain/Entity`, а не на `src/Entity`.
 - Реализации репозиториев регистрируются в DI как реализации интерфейсов Application/Domain; потребители получают интерфейс, не класс из Infrastructure.
+- Исходящие HTTP-клиенты: scoped `HttpClient` в `config/packages/http_clients.yaml`, хост сервиса в отдельном env; см. [http-clients.md](http-clients.md).
+- Исключения: корень `Domain/Exception/CoreException`; каждый метод, который бросает исключение, описывает его в `@throws`; через порт — только типы из `@throws`; см. [exceptions.md](exceptions.md).
+- Логи: `LoggerService` (alias `Psr\Log\LoggerInterface`); не писать в Monolog напрямую; см. [logging.md](logging.md).
 - Штатные каталоги skeleton (`src/Controller`, `src/Entity`, `src/Repository`) не используются для прикладного кода.
+- Deprecated-методы и API не используются, кроме случая, когда альтернативы нет.
