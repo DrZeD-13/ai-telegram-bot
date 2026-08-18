@@ -1,0 +1,15 @@
+/.idea
+###> symfony/framework-bundle ###
+/.env
+/.env.local
+/.env.local.php
+/.env.*.local
+/public/bundles/
+/var/
+/vendor/
+/.docker.loc/data
+/.docker.loc/logs
+###< symfony/framework-bundle ###
+
+# macOS
+.DS_Store
