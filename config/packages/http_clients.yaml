@@ -19,3 +19,6 @@ framework:
         scoped_clients:
             telegram:
                 base_uri: '%env(resolve:TELEGRAM_API_HOST)%'
+            neural_network:
+                base_uri: '%env(resolve:NEURAL_NETWORK_API_HOST)%'
+                timeout: 1800
