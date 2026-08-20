@@ -42,6 +42,9 @@ class ProcessedTelegramMessage
     #[ORM\Column(options: ['comment' => 'Идентификатор сообщения в чате Telegram'])]
     private int $messageId;
 
+    #[ORM\Column(options: ['comment' => 'Идентификатор Telegram update'])]
+    private int $updateId;
+
     #[ORM\Column(type: Types::TEXT, nullable: true, options: ['comment' => 'Текст входящего сообщения'])]
     private ?string $text;
 
@@ -71,6 +74,7 @@ class ProcessedTelegramMessage
     public function __construct(
         int $chatId,
         int $messageId,
+        int $updateId,
         DateTimeImmutable $sentAt,
         ?string $userFirstName = null,
         ?string $userLastName = null,
@@ -80,6 +84,7 @@ class ProcessedTelegramMessage
         $this->id = new UuidV7();
         $this->chatId = $chatId;
         $this->messageId = $messageId;
+        $this->updateId = $updateId;
         $this->sentAt = $sentAt;
         $this->userFirstName = $userFirstName;
         $this->userLastName = $userLastName;
@@ -156,6 +161,11 @@ class ProcessedTelegramMessage
     public function getMessageId(): int
     {
         return $this->messageId;
+    }
+
+    public function getUpdateId(): int
+    {
+        return $this->updateId;
     }
 
     public function getText(): ?string

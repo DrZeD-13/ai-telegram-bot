@@ -20,6 +20,7 @@ use Symfony\Component\Uid\UuidV7;
 #[CoversMethod(ProcessedTelegramMessage::class, 'getId')]
 #[CoversMethod(ProcessedTelegramMessage::class, 'getChatId')]
 #[CoversMethod(ProcessedTelegramMessage::class, 'getMessageId')]
+#[CoversMethod(ProcessedTelegramMessage::class, 'getUpdateId')]
 #[CoversMethod(ProcessedTelegramMessage::class, 'getSentAt')]
 #[CoversMethod(ProcessedTelegramMessage::class, 'getUserFirstName')]
 #[CoversMethod(ProcessedTelegramMessage::class, 'getUserLastName')]
@@ -38,6 +39,7 @@ final class ProcessedTelegramMessageTest extends TestCase
         $message = new ProcessedTelegramMessage(
             chatId: -1001234567890,
             messageId: 42,
+            updateId: 1001,
             sentAt: $sentAt,
             userFirstName: 'Павел',
             userLastName: 'Наумов',
@@ -48,6 +50,7 @@ final class ProcessedTelegramMessageTest extends TestCase
         self::assertInstanceOf(UuidV7::class, $message->getId());
         self::assertSame(-1001234567890, $message->getChatId());
         self::assertSame(42, $message->getMessageId());
+        self::assertSame(1001, $message->getUpdateId());
         self::assertSame($sentAt, $message->getSentAt());
         self::assertSame('Павел', $message->getUserFirstName());
         self::assertSame('Наумов', $message->getUserLastName());
@@ -64,9 +67,11 @@ final class ProcessedTelegramMessageTest extends TestCase
         $message = new ProcessedTelegramMessage(
             chatId: 1,
             messageId: 2,
+            updateId: 3,
             sentAt: new DateTimeImmutable(),
         );
 
+        self::assertSame(3, $message->getUpdateId());
         self::assertNull($message->getUserFirstName());
         self::assertNull($message->getUserLastName());
         self::assertNull($message->getUserNickname());
@@ -79,6 +84,7 @@ final class ProcessedTelegramMessageTest extends TestCase
         $message = new ProcessedTelegramMessage(
             chatId: 1,
             messageId: 2,
+            updateId: 3,
             sentAt: new DateTimeImmutable(),
         );
         $message->markProcessedError('сбой');
@@ -94,6 +100,7 @@ final class ProcessedTelegramMessageTest extends TestCase
         $message = new ProcessedTelegramMessage(
             chatId: 1,
             messageId: 2,
+            updateId: 3,
             sentAt: new DateTimeImmutable(),
         );
 
@@ -108,6 +115,7 @@ final class ProcessedTelegramMessageTest extends TestCase
         $message = new ProcessedTelegramMessage(
             chatId: 1,
             messageId: 2,
+            updateId: 3,
             sentAt: new DateTimeImmutable(),
         );
 

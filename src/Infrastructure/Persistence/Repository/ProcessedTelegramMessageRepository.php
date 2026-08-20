@@ -5,30 +5,67 @@ declare(strict_types=1);
 namespace App\Infrastructure\Persistence\Repository;
 
 use App\Domain\Entity\ProcessedTelegramMessage;
+use App\Domain\Exception\CoreException;
+use App\Domain\Repository\ProcessedTelegramMessageRepository as ProcessedTelegramMessageRepositoryInterface;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
+use Symfony\Component\DependencyInjection\Attribute\AsAlias;
+use Throwable;
 
 /**
  * @extends ServiceEntityRepository<ProcessedTelegramMessage>
  */
-class ProcessedTelegramMessageRepository extends ServiceEntityRepository
+#[AsAlias(ProcessedTelegramMessageRepositoryInterface::class)]
+class ProcessedTelegramMessageRepository extends ServiceEntityRepository implements ProcessedTelegramMessageRepositoryInterface
 {
     public function __construct(ManagerRegistry $registry)
     {
         parent::__construct($registry, ProcessedTelegramMessage::class);
     }
 
-    public function save(ProcessedTelegramMessage $message): void
+    /**
+     * @throws CoreException
+     */
+    public function findMaxUpdateId(): ?int
     {
-        $this->getEntityManager()->persist($message);
-        $this->getEntityManager()->flush();
+        try {
+            $maxUpdateId = $this->createQueryBuilder('message')
+                ->select('MAX(message.updateId)')
+                ->getQuery()
+                ->getSingleScalarResult();
+
+            if ($maxUpdateId === null) {
+                return null;
+            }
+
+            return (int) $maxUpdateId;
+        } catch (CoreException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new CoreException(
+                message: 'Не удалось получить максимальный идентификатор Telegram update',
+                previous: $exception,
+            );
+        }
     }
 
+    /**
+     * @throws CoreException
+     */
     public function findOneByChatAndMessageId(int $chatId, int $messageId): ?ProcessedTelegramMessage
     {
-        return $this->findOneBy([
-            'chatId' => $chatId,
-            'messageId' => $messageId,
-        ]);
+        try {
+            return $this->findOneBy([
+                'chatId' => $chatId,
+                'messageId' => $messageId,
+            ]);
+        } catch (CoreException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new CoreException(
+                message: 'Не удалось найти обработанное сообщение Telegram',
+                previous: $exception,
+            );
+        }
     }
 }
