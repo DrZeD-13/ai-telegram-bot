@@ -26,4 +26,4 @@
 
 - [x] 5.1 Update `ProcessedTelegramMessageTest` for `updateId` (`CoversMethod` on constructor/`getUpdateId`)
 - [x] 5.2 Add `tests/Unit/Application/UseCase/ProcessIncomingTelegramMessagesTest.php` covering `execute`: empty inbox (no flush); offset +1; N persist and one flush per chunk of 100; skip empty text and duplicate; validation 2.1.1; AI failure 2.1.2; send failure 2.1.3; error notify send failure still persist+flush; success path
-- [ ] 5.3 Run Unit suite and PHPStan (`src/` + `tests/`) at level max
+- [x] 5.3 Run Unit suite and PHPStan (`src/` + `tests/`) at level max

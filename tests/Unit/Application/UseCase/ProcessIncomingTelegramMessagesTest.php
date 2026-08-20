@@ -27,6 +27,7 @@ use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversMethod;
 use PHPUnit\Framework\MockObject\MockObject;
+use PHPUnit\Framework\MockObject\Stub;
 use PHPUnit\Framework\TestCase;
 
 #[CoversClass(ProcessIncomingTelegramMessages::class)]
@@ -35,21 +36,21 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 {
     public function testEmptyInboxDoesNotFlush(): void
     {
-        $telegramBotGateway = $this->createTelegramBotGateway();
+        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->expects(self::once())
             ->method('getMessages')
             ->with(null)
             ->willReturn(new IncomingTelegramMessageCollection());
         $telegramBotGateway->expects(self::never())->method('sendMessage');
 
-        $neuralNetworkGateway = $this->createNeuralNetworkGateway();
+        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
         $neuralNetworkGateway->expects(self::never())->method('listModels');
         $neuralNetworkGateway->expects(self::never())->method('createChatCompletion');
 
         $repository = $this->createRepository();
         $repository->method('findMaxUpdateId')->willReturn(null);
 
-        $unitOfWork = $this->createUnitOfWork();
+        $unitOfWork = $this->createMock(UnitOfWork::class);
         $unitOfWork->expects(self::never())->method('persist');
         $unitOfWork->expects(self::never())->method('flush');
 
@@ -63,7 +64,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 
     public function testSubsequentPollUsesMaxUpdateIdPlusOne(): void
     {
-        $telegramBotGateway = $this->createTelegramBotGateway();
+        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->expects(self::once())
             ->method('getMessages')
             ->with(11)
@@ -72,7 +73,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         $repository = $this->createRepository();
         $repository->method('findMaxUpdateId')->willReturn(10);
 
-        $unitOfWork = $this->createUnitOfWork();
+        $unitOfWork = $this->createMock(UnitOfWork::class);
         $unitOfWork->expects(self::never())->method('flush');
 
         $this->createUseCase(
@@ -127,7 +128,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         $inRunDuplicate = $this->incomingMessage(updateId: 4, messageId: 40, chatId: 99, text: 'первый');
         $inRunDuplicateAgain = $this->incomingMessage(updateId: 5, messageId: 40, chatId: 99, text: 'второй');
 
-        $telegramBotGateway = $this->createTelegramBotGateway();
+        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
             $this->incomingMessage(updateId: 1, messageId: 10, text: null),
             $duplicateIncoming,
@@ -137,8 +138,13 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         ));
         $telegramBotGateway->expects(self::once())->method('sendMessage')->willReturn($this->sentMessage());
 
-        $neuralNetworkGateway = $this->successfulNeuralNetworkGateway();
-        $neuralNetworkGateway->expects(self::once())->method('createChatCompletion');
+        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
+        $neuralNetworkGateway->method('listModels')->willReturn(
+            new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
+        );
+        $neuralNetworkGateway->expects(self::once())
+            ->method('createChatCompletion')
+            ->willReturn(new ChatCompletionResult('id', 'ответ модели'));
 
         $existing = new ProcessedTelegramMessage(
             chatId: 1,
@@ -161,7 +167,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         );
 
         $persisted = [];
-        $unitOfWork = $this->createUnitOfWork();
+        $unitOfWork = $this->createMock(UnitOfWork::class);
         $unitOfWork->expects(self::once())->method('persist')->willReturnCallback(
             static function (object $entity) use (&$persisted): void {
                 $persisted[] = $entity;
@@ -187,7 +193,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
     public function testValidationFailureDoesNotCallNeuralNetwork(): void
     {
         $text = str_repeat('я', 1025);
-        $telegramBotGateway = $this->createTelegramBotGateway();
+        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->method('getMessages')->willReturn(
             new IncomingTelegramMessageCollection($this->incomingMessage(text: $text)),
         );
@@ -196,7 +202,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             ->with(1, 'запрос слишком длиный сделайте не более 1024 символов')
             ->willReturn($this->sentMessage());
 
-        $neuralNetworkGateway = $this->createNeuralNetworkGateway();
+        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
         $neuralNetworkGateway->expects(self::never())->method('listModels');
         $neuralNetworkGateway->expects(self::never())->method('createChatCompletion');
 
@@ -220,7 +226,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 
     public function testNeuralNetworkFailureStoresErrorAndNotifiesUser(): void
     {
-        $telegramBotGateway = $this->createTelegramBotGateway();
+        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->method('getMessages')->willReturn(
             new IncomingTelegramMessageCollection($this->incomingMessage()),
         );
@@ -255,7 +261,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 
     public function testEmptyNeuralNetworkReplyIsNeuralNetworkFailure(): void
     {
-        $telegramBotGateway = $this->createTelegramBotGateway();
+        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->method('getMessages')->willReturn(
             new IncomingTelegramMessageCollection($this->incomingMessage()),
         );
@@ -385,7 +391,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             username: 'anna',
         );
 
-        $telegramBotGateway = $this->createTelegramBotGateway();
+        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->method('getMessages')->willReturn(
             new IncomingTelegramMessageCollection($incoming),
         );
@@ -394,7 +400,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             ->with(88, 'ответ модели')
             ->willReturn($this->sentMessage());
 
-        $neuralNetworkGateway = $this->createNeuralNetworkGateway();
+        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
         $neuralNetworkGateway->expects(self::once())->method('listModels')->willReturn(
             new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
         );
@@ -439,7 +445,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
      */
     private function recordingUnitOfWork(array &$persisted): UnitOfWork&MockObject
     {
-        $unitOfWork = $this->createUnitOfWork();
+        $unitOfWork = $this->createMock(UnitOfWork::class);
         $unitOfWork->expects(self::once())->method('persist')->willReturnCallback(
             static function (object $entity) use (&$persisted): void {
                 self::assertInstanceOf(ProcessedTelegramMessage::class, $entity);
@@ -451,7 +457,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         return $unitOfWork;
     }
 
-    private function emptyRepository(): ProcessedTelegramMessageRepository&MockObject
+    private function emptyRepository(): ProcessedTelegramMessageRepository&Stub
     {
         $repository = $this->createRepository();
         $repository->method('findMaxUpdateId')->willReturn(null);
@@ -460,7 +466,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         return $repository;
     }
 
-    private function successfulNeuralNetworkGateway(): NeuralNetworkGateway&MockObject
+    private function successfulNeuralNetworkGateway(): NeuralNetworkGateway&Stub
     {
         $neuralNetworkGateway = $this->createNeuralNetworkGateway();
         $neuralNetworkGateway->method('listModels')->willReturn(
@@ -485,7 +491,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             $neuralNetworkGateway,
             $repository,
             $unitOfWork,
-            $logger ?? $this->createMock(LoggerService::class),
+            $logger ?? $this->createStub(LoggerService::class),
         );
     }
 
@@ -547,23 +553,23 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         );
     }
 
-    private function createTelegramBotGateway(): TelegramBotGateway&MockObject
+    private function createTelegramBotGateway(): TelegramBotGateway&Stub
     {
-        return $this->createMock(TelegramBotGateway::class);
+        return $this->createStub(TelegramBotGateway::class);
     }
 
-    private function createNeuralNetworkGateway(): NeuralNetworkGateway&MockObject
+    private function createNeuralNetworkGateway(): NeuralNetworkGateway&Stub
     {
-        return $this->createMock(NeuralNetworkGateway::class);
+        return $this->createStub(NeuralNetworkGateway::class);
     }
 
-    private function createRepository(): ProcessedTelegramMessageRepository&MockObject
+    private function createRepository(): ProcessedTelegramMessageRepository&Stub
     {
-        return $this->createMock(ProcessedTelegramMessageRepository::class);
+        return $this->createStub(ProcessedTelegramMessageRepository::class);
     }
 
-    private function createUnitOfWork(): UnitOfWork&MockObject
+    private function createUnitOfWork(): UnitOfWork&Stub
     {
-        return $this->createMock(UnitOfWork::class);
+        return $this->createStub(UnitOfWork::class);
     }
 }

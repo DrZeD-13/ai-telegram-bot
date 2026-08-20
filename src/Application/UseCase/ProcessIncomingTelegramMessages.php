@@ -58,18 +58,44 @@ final class ProcessIncomingTelegramMessages
             return;
         }
 
-        $modelId = false;
+        /** @var array<string, true> $seenChatMessageIds */
         $seenChatMessageIds = [];
+        $modelId = false;
 
         foreach (array_chunk($incomingMessages->all(), self::CHUNK_SIZE) as $chunk) {
             $persistedInChunk = false;
 
             foreach ($chunk as $incomingMessage) {
-                $entity = $this->processIncomingMessage($incomingMessage, $seenChatMessageIds, $modelId);
-                if ($entity === null) {
+                $text = $incomingMessage->text;
+                if ($text === null || $text === '') {
                     continue;
                 }
 
+                $chatMessageKey = $this->chatMessageKey($incomingMessage);
+                if (isset($seenChatMessageIds[$chatMessageKey])) {
+                    continue;
+                }
+
+                $existing = $this->processedTelegramMessageRepository->findOneByChatAndMessageId(
+                    (int) $incomingMessage->chat->id,
+                    $incomingMessage->messageId,
+                );
+                if ($existing !== null) {
+                    $seenChatMessageIds[$chatMessageKey] = true;
+                    continue;
+                }
+
+                $seenChatMessageIds[$chatMessageKey] = true;
+
+                if (mb_strlen($text) <= self::MAX_USER_TEXT_LENGTH && $modelId === false) {
+                    $modelId = $this->loadModelId();
+                }
+
+                $entity = $this->processIncomingMessage(
+                    $incomingMessage,
+                    $text,
+                    $modelId === false ? null : $modelId,
+                );
                 $this->unitOfWork->persist($entity);
                 $persistedInChunk = true;
             }
@@ -81,54 +107,24 @@ final class ProcessIncomingTelegramMessages
     }
 
     /**
-     * @param array<string, true> $seenChatMessageIds
-     *
-     * @param-out array<string, true> $seenChatMessageIds
-     * @param-out string|false|null $modelId
-     *
-     * @throws CoreException
      * @throws EmptyProcessedTelegramMessageErrorTextException
      */
     private function processIncomingMessage(
         IncomingTelegramMessage $incomingMessage,
-        array &$seenChatMessageIds,
-        string|false|null &$modelId,
-    ): ?ProcessedTelegramMessage {
-        $text = $incomingMessage->text;
-        if ($text === null || $text === '') {
-            return null;
-        }
-
-        $chatId = (int) $incomingMessage->chat->id;
-        $seenKey = $chatId . ':' . $incomingMessage->messageId;
-        if (isset($seenChatMessageIds[$seenKey])) {
-            return null;
-        }
-
-        $existing = $this->processedTelegramMessageRepository->findOneByChatAndMessageId(
-            $chatId,
-            $incomingMessage->messageId,
-        );
-        if ($existing !== null) {
-            $seenChatMessageIds[$seenKey] = true;
-
-            return null;
-        }
-
-        $seenChatMessageIds[$seenKey] = true;
-
+        string $text,
+        ?string $modelId,
+    ): ProcessedTelegramMessage {
         if (mb_strlen($text) > self::MAX_USER_TEXT_LENGTH) {
             return $this->markFailed($incomingMessage, $text, self::ERROR_VALIDATION);
         }
 
-        $resolvedModelId = $this->resolveModelId($modelId);
-        if ($resolvedModelId === null) {
+        if ($modelId === null) {
             return $this->markFailed($incomingMessage, $text, self::ERROR_NEURAL_NETWORK);
         }
 
         try {
             $completion = $this->neuralNetworkGateway->createChatCompletion(new ChatCompletionRequest(
-                model: $resolvedModelId,
+                model: $modelId,
                 messages: new ChatMessageCollection(
                     new ChatMessage('user', $text . self::AI_LENGTH_INSTRUCTION_SUFFIX),
                 ),
@@ -153,32 +149,24 @@ final class ProcessIncomingTelegramMessages
         return $entity;
     }
 
-    /**
-     * @param-out string|null $modelId
-     */
-    private function resolveModelId(string|false|null &$modelId): ?string
+    private function chatMessageKey(IncomingTelegramMessage $incomingMessage): string
     {
-        if ($modelId !== false) {
-            return $modelId;
-        }
+        return (int) $incomingMessage->chat->id . ':' . $incomingMessage->messageId;
+    }
 
+    private function loadModelId(): ?string
+    {
         try {
             $models = $this->neuralNetworkGateway->listModels();
         } catch (NeuralNetworkException) {
-            $modelId = null;
-
             return null;
         }
 
         if ($models->count() === 0) {
-            $modelId = null;
-
             return null;
         }
 
-        $modelId = $models->all()[0]->id;
-
-        return $modelId;
+        return $models->all()[0]->id;
     }
 
     /**
