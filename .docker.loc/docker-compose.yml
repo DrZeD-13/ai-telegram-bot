@@ -23,8 +23,12 @@ services:
     build:
       context: ./context
       dockerfile: images/php-fpm/dev/Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       PHP_IDE_CONFIG: serverName=php-fpm
+      NEURAL_NETWORK_API_HOST: ${NEURAL_NETWORK_API_HOST}
+      NEURAL_NETWORK_API_KEY: ${NEURAL_NETWORK_API_KEY:-}
     volumes:
       - ../:/var/www
     working_dir: /var/www/
