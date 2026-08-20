@@ -23,5 +23,5 @@ interface TelegramBotGateway
      * @throws TelegramBotTransportException
      * @throws TelegramBotValidationException
      */
-    public function sendMessage(int|string $chatId, string $text): SentTelegramMessage;
+    public function sendMessage(int $chatId, string $text): SentTelegramMessage;
 }

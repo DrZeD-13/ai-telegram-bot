@@ -16,16 +16,18 @@ final readonly class TelegramChatMapper
      */
     public function map(array $chat): TelegramChat
     {
-        if (!array_key_exists('id', $chat) || (!is_int($chat['id']) && !is_string($chat['id']))) {
+        if (!array_key_exists('id', $chat)) {
             throw new TelegramBotTransportException('Telegram chat payload is missing a valid id.');
         }
+
+        $id = $this->mapChatId($chat['id']);
 
         if (!isset($chat['type']) || !is_string($chat['type'])) {
             throw new TelegramBotTransportException('Telegram chat payload is missing a valid type.');
         }
 
         return new TelegramChat(
-            id: $chat['id'],
+            id: $id,
             type: $chat['type'],
             title: $this->optionalString($chat, 'title'),
             username: $this->optionalString($chat, 'username'),
@@ -34,6 +36,22 @@ final readonly class TelegramChatMapper
             isForum: $this->optionalTrue($chat, 'is_forum'),
             isDirectMessages: $this->optionalTrue($chat, 'is_direct_messages'),
         );
+    }
+
+    /**
+     * @throws TelegramBotTransportException
+     */
+    private function mapChatId(mixed $id): int
+    {
+        if (is_int($id)) {
+            return $id;
+        }
+
+        if (is_string($id) && preg_match('/^-?\d+$/', $id) === 1) {
+            return (int) $id;
+        }
+
+        throw new TelegramBotTransportException('Telegram chat payload is missing a valid id.');
     }
 
     /**

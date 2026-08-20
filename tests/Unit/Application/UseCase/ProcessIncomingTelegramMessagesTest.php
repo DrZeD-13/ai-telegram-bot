@@ -299,7 +299,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             new IncomingTelegramMessageCollection($this->incomingMessage()),
         );
         $telegramBotGateway->method('sendMessage')->willReturnCallback(
-            static function (int|string $chatId, string $text): SentTelegramMessage {
+            static function (int $chatId, string $text): SentTelegramMessage {
                 if ($text === 'ответ модели') {
                     throw new TelegramBotTransportException('не доставлено');
                 }

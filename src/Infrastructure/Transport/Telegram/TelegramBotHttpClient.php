@@ -13,14 +13,12 @@ use App\Application\Port\TelegramBotGateway;
 use App\Domain\Exception\CoreException;
 use App\Infrastructure\Transport\Telegram\Mapper\IncomingTelegramMessageCollectionMapper;
 use App\Infrastructure\Transport\Telegram\Mapper\SentTelegramMessageMapper;
-use Symfony\Component\DependencyInjection\Attribute\AsAlias;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\DependencyInjection\Attribute\Target;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 use Throwable;
 
-#[AsAlias(TelegramBotGateway::class)]
 final readonly class TelegramBotHttpClient implements TelegramBotGateway
 {
     public function __construct(
@@ -79,7 +77,7 @@ final readonly class TelegramBotHttpClient implements TelegramBotGateway
      * @throws TelegramBotTransportException
      * @throws TelegramBotValidationException
      */
-    public function sendMessage(int|string $chatId, string $text): SentTelegramMessage
+    public function sendMessage(int $chatId, string $text): SentTelegramMessage
     {
         try {
             $this->assertConfigured();

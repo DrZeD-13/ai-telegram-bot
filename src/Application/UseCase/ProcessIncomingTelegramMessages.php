@@ -28,7 +28,7 @@ final class ProcessIncomingTelegramMessages
     private const int MAX_USER_TEXT_LENGTH = 1024;
     private const int CHUNK_SIZE = 100;
     private const string AI_LENGTH_INSTRUCTION_SUFFIX = "\nответ сделай не больше 1024 символа";
-    private const string ERROR_VALIDATION = 'запрос слишком длиный сделайте не более 1024 символов';
+    private const string ERROR_VALIDATION = 'запрос слишком длинный сделайте не более 1024 символов';
     private const string ERROR_NEURAL_NETWORK = 'сервис временно не доступен по пробуйте позднее';
     private const string ERROR_DELIVERY = 'сообщение не удалось доставить';
 
@@ -137,6 +137,12 @@ final class ProcessIncomingTelegramMessages
             return $this->markFailed($incomingMessage, $text, self::ERROR_NEURAL_NETWORK);
         }
 
+        $this->logger->info('Нейросеть вернула ответ', [
+            'userId' => $this->userId($incomingMessage),
+            'message' => $text,
+            'response' => $completion->text,
+        ]);
+
         try {
             $this->telegramBotGateway->sendMessage($incomingMessage->chat->id, $completion->text);
         } catch (TelegramBotException) {
@@ -152,6 +158,11 @@ final class ProcessIncomingTelegramMessages
     private function chatMessageKey(IncomingTelegramMessage $incomingMessage): string
     {
         return (int) $incomingMessage->chat->id . ':' . $incomingMessage->messageId;
+    }
+
+    private function userId(IncomingTelegramMessage $incomingMessage): string
+    {
+        return (string) ($incomingMessage->from?->id ?? '');
     }
 
     private function loadModelId(): ?string
@@ -185,6 +196,11 @@ final class ProcessIncomingTelegramMessages
 
         try {
             $this->telegramBotGateway->sendMessage($incomingMessage->chat->id, $errorText);
+            $this->logger->info('Пользователю отправлено сообщение об ошибке обработки', [
+                'userId' => $this->userId($incomingMessage),
+                'chatId' => (string) $incomingMessage->chat->id,
+                'errorText' => $errorText,
+            ]);
         } catch (TelegramBotException $exception) {
             $this->logger->logException(
                 'Не удалось отправить пользователю сообщение об ошибке обработки',

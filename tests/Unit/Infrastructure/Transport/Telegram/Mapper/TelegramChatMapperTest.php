@@ -34,14 +34,14 @@ final class TelegramChatMapperTest extends TestCase
         self::assertNull($chat->isDirectMessages);
     }
 
-    public function testMapReturnsStringChatId(): void
+    public function testMapReturnsIntegerChatIdFromNumericString(): void
     {
         $chat = (new TelegramChatMapper())->map([
             'id' => '-100123',
             'type' => 'supergroup',
         ]);
 
-        self::assertSame('-100123', $chat->id);
+        self::assertSame(-100123, $chat->id);
         self::assertNull($chat->title);
         self::assertNull($chat->firstName);
         self::assertNull($chat->lastName);
