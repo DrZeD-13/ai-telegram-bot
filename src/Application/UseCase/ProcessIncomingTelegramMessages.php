@@ -50,59 +50,52 @@ final class ProcessIncomingTelegramMessages
      */
     public function execute(): void
     {
-        $maxUpdateId = $this->processedTelegramMessageRepository->findMaxUpdateId();
-        $offset = $maxUpdateId === null ? null : $maxUpdateId + 1;
-        $incomingMessages = $this->telegramBotGateway->getMessages($offset);
+        try {
+            $maxUpdateId = $this->processedTelegramMessageRepository->findMaxUpdateId();
+            $offset = $maxUpdateId === null ? null : $maxUpdateId + 1;
+            $incomingMessages = $this->telegramBotGateway->getMessages($offset);
 
-        if ($incomingMessages->count() === 0) {
-            return;
-        }
-
-        /** @var array<string, true> $seenChatMessageIds */
-        $seenChatMessageIds = [];
-        $modelId = false;
-
-        foreach (array_chunk($incomingMessages->all(), self::CHUNK_SIZE) as $chunk) {
-            $persistedInChunk = false;
-
-            foreach ($chunk as $incomingMessage) {
-                $text = $incomingMessage->text;
-                if ($text === null || $text === '') {
-                    continue;
-                }
-
-                $chatMessageKey = $this->chatMessageKey($incomingMessage);
-                if (isset($seenChatMessageIds[$chatMessageKey])) {
-                    continue;
-                }
-
-                $existing = $this->processedTelegramMessageRepository->findOneByChatAndMessageId(
-                    (int) $incomingMessage->chat->id,
-                    $incomingMessage->messageId,
-                );
-                if ($existing !== null) {
-                    $seenChatMessageIds[$chatMessageKey] = true;
-                    continue;
-                }
-
-                $seenChatMessageIds[$chatMessageKey] = true;
-
-                if (mb_strlen($text) <= self::MAX_USER_TEXT_LENGTH && $modelId === false) {
-                    $modelId = $this->loadModelId();
-                }
-
-                $entity = $this->processIncomingMessage(
-                    $incomingMessage,
-                    $text,
-                    $modelId === false ? null : $modelId,
-                );
-                $this->unitOfWork->persist($entity);
-                $persistedInChunk = true;
+            if ($incomingMessages->count() === 0) {
+                return;
             }
 
-            if ($persistedInChunk) {
-                $this->unitOfWork->flush();
+            $modelId = null;
+            $modelResolved = false;
+
+            foreach (array_chunk($incomingMessages->all(), self::CHUNK_SIZE) as $chunk) {
+                $persistedInChunk = false;
+
+                foreach ($chunk as $incomingMessage) {
+                    $text = $incomingMessage->text;
+                    if ($text === null || $text === '') {
+                        continue;
+                    }
+
+                    $existing = $this->processedTelegramMessageRepository->findOneByChatAndMessageId(
+                        $incomingMessage->chat->id,
+                        $incomingMessage->messageId,
+                    );
+                    if ($existing !== null) {
+                        continue;
+                    }
+
+                    if (mb_strlen($text) <= self::MAX_USER_TEXT_LENGTH && !$modelResolved) {
+                        $modelId = $this->loadModelId();
+                        $modelResolved = true;
+                    }
+
+                    $this->unitOfWork->persist($this->processIncomingMessage($incomingMessage, $text, $modelId));
+                    $persistedInChunk = true;
+                }
+
+                if ($persistedInChunk) {
+                    $this->unitOfWork->flush();
+                }
+
+                $this->unitOfWork->clear();
             }
+        } finally {
+            $this->unitOfWork->clear();
         }
     }
 
@@ -153,11 +146,6 @@ final class ProcessIncomingTelegramMessages
         $entity->markProcessedSuccess();
 
         return $entity;
-    }
-
-    private function chatMessageKey(IncomingTelegramMessage $incomingMessage): string
-    {
-        return (int) $incomingMessage->chat->id . ':' . $incomingMessage->messageId;
     }
 
     private function userId(IncomingTelegramMessage $incomingMessage): string
