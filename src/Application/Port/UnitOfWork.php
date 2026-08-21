@@ -17,4 +17,9 @@ interface UnitOfWork
      * @throws PersistenceException
      */
     public function flush(): void;
+
+    /**
+     * @throws PersistenceException
+     */
+    public function clear(): void;
 }

@@ -51,4 +51,21 @@ final readonly class DoctrineUnitOfWork implements UnitOfWork
             );
         }
     }
+
+    /**
+     * @throws PersistenceException
+     */
+    public function clear(): void
+    {
+        try {
+            $this->entityManager->clear();
+        } catch (PersistenceException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new PersistenceException(
+                message: 'Не удалось очистить unit of work',
+                previous: $exception,
+            );
+        }
+    }
 }

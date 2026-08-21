@@ -53,6 +53,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         $unitOfWork = $this->createMock(UnitOfWork::class);
         $unitOfWork->expects(self::never())->method('persist');
         $unitOfWork->expects(self::never())->method('flush');
+        $unitOfWork->expects(self::once())->method('clear');
 
         $this->createUseCase(
             $telegramBotGateway,
@@ -75,6 +76,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 
         $unitOfWork = $this->createMock(UnitOfWork::class);
         $unitOfWork->expects(self::never())->method('flush');
+        $unitOfWork->expects(self::once())->method('clear');
 
         $this->createUseCase(
             $telegramBotGateway,
@@ -122,19 +124,16 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         self::assertSame([100, 101], $persistCountsAtFlush);
     }
 
-    public function testSkipsEmptyTextAndDuplicateChatMessageId(): void
+    public function testSkipsEmptyTextAndDuplicateAlreadyInDatabase(): void
     {
         $duplicateIncoming = $this->incomingMessage(updateId: 2, messageId: 20, text: 'повтор');
-        $inRunDuplicate = $this->incomingMessage(updateId: 4, messageId: 40, chatId: 99, text: 'первый');
-        $inRunDuplicateAgain = $this->incomingMessage(updateId: 5, messageId: 40, chatId: 99, text: 'второй');
 
         $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
         $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
             $this->incomingMessage(updateId: 1, messageId: 10, text: null),
             $duplicateIncoming,
             $this->incomingMessage(updateId: 3, messageId: 30, text: ''),
-            $inRunDuplicate,
-            $inRunDuplicateAgain,
+            $this->incomingMessage(updateId: 4, messageId: 40, chatId: 99, text: 'первый'),
         ));
         $telegramBotGateway->expects(self::once())->method('sendMessage')->willReturn($this->sentMessage());
 
@@ -174,6 +173,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             },
         );
         $unitOfWork->expects(self::once())->method('flush');
+        $unitOfWork->expects(self::exactly(2))->method('clear');
 
         $this->createUseCase(
             $telegramBotGateway,
@@ -199,7 +199,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         );
         $telegramBotGateway->expects(self::once())
             ->method('sendMessage')
-            ->with(1, 'запрос слишком длиный сделайте не более 1024 символов')
+            ->with(1, 'запрос слишком длинный сделайте не более 1024 символов')
             ->willReturn($this->sentMessage());
 
         $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
@@ -221,7 +221,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
         self::assertSame(1024, mb_strlen((string) $message->getText()));
         self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $message->getStatus());
-        self::assertSame('запрос слишком длиный сделайте не более 1024 символов', $message->getErrorText());
+        self::assertSame('запрос слишком длинный сделайте не более 1024 символов', $message->getErrorText());
     }
 
     public function testNeuralNetworkFailureStoresErrorAndNotifiesUser(): void
@@ -453,6 +453,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             },
         );
         $unitOfWork->expects(self::once())->method('flush');
+        $unitOfWork->expects(self::exactly(2))->method('clear');
 
         return $unitOfWork;
     }
