@@ -11,6 +11,7 @@ use App\Domain\Repository\ConversationMessageRepository as ConversationMessageRe
 use DateTimeImmutable;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
+use Symfony\Bridge\Doctrine\Types\UuidType;
 use Symfony\Component\DependencyInjection\Attribute\AsAlias;
 use Symfony\Component\Uid\Uuid;
 use Throwable;
@@ -37,7 +38,8 @@ class ConversationMessageRepository extends ServiceEntityRepository implements C
             /** @var list<ConversationMessage> $messages */
             $messages = $this->createQueryBuilder('message')
                 ->where('message.chatId = :chatId')
-                ->setParameter('chatId', $chatId)
+                // Without the uuid type Doctrine binds RFC-4122 text; the column is BINARY(16).
+                ->setParameter('chatId', $chatId, UuidType::NAME)
                 ->orderBy('message.createdAt', 'DESC')
                 ->addOrderBy('message.id', 'DESC')
                 ->setMaxResults(self::MAX_HISTORY)
