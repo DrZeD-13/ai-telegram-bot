@@ -54,20 +54,28 @@ final class HandleChatTurn implements ChatTurnHandler
 
     public function isResumeCommand(string $text): bool
     {
-        $line = strtolower($this->commandLine($text));
+        $token = $this->leadingSlashCommand($text);
 
-        return $line === '/open'
-            || str_starts_with($line, '/open ')
-            || str_starts_with($line, '/open@');
+        return $token === '/open' || str_starts_with($token, '/open@');
     }
 
     public function parseResumeSessionId(string $text): ?Uuid
     {
-        if (!preg_match('/^\/open(?:@[^\s]+)?\s+(\S+)/i', $this->commandLine($text), $matches)) {
+        if (!$this->isResumeCommand($text)) {
             return null;
         }
 
-        $rawId = $matches[1];
+        $line = $this->normalizedCommandLine($text);
+        $argument = explode(' ', $line, 2)[1] ?? '';
+        if (!preg_match(
+            '/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/',
+            $argument,
+            $matches,
+        )) {
+            return null;
+        }
+
+        $rawId = $matches[0];
         if (!Uuid::isValid($rawId)) {
             return null;
         }
@@ -110,6 +118,33 @@ final class HandleChatTurn implements ChatTurnHandler
         }
 
         return $text;
+    }
+
+    /**
+     * Telegram paste often uses NBSP or a line break between `/open` and the UUID.
+     */
+    private function normalizedCommandLine(string $text): string
+    {
+        $normalized = preg_replace('/[\p{Z}\s]+/u', ' ', $this->commandLine($text));
+
+        return trim(is_string($normalized) ? $normalized : $this->commandLine($text));
+    }
+
+    /**
+     * Command name only (`/open`, `/open@bot`). Do not glue the UUID onto it:
+     * stripping hyphens from `/open uuid` would yield `/open018f…` and miss the command.
+     */
+    private function leadingSlashCommand(string $text): string
+    {
+        $line = strtolower($this->normalizedCommandLine($text));
+        if ($line === '' || !str_starts_with($line, '/')) {
+            return '';
+        }
+
+        $token = explode(' ', $line, 2)[0];
+        $ascii = preg_replace('/[^a-z0-9\/@_]/', '', $token);
+
+        return is_string($ascii) ? $ascii : $token;
     }
 
     /**

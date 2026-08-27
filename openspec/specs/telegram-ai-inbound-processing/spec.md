@@ -74,6 +74,12 @@ The system SHALL treat incoming text `/open <uuid>` (and `/open@botname <uuid>`)
 - **THEN** further user messages in that chat use the restored session history
 - **AND** the chat receives the current session UUID
 
+#### Scenario: /open is recognized despite Telegram whitespace
+
+- **WHEN** an incoming message starts with `/open` and a session UUID separated by a regular space, a non-breaking space, or a line break
+- **THEN** the system treats it as a resume command
+- **AND** it does not send the text to the neural network
+
 #### Scenario: /open rejects invalid or foreign session UUID
 
 - **WHEN** an incoming message text is `/open` with a missing argument, a value that is not a UUID, a UUID that does not exist, or a session UUID owned by another Telegram chat

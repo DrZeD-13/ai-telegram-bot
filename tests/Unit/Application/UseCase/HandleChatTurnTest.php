@@ -55,7 +55,15 @@ final class HandleChatTurnTest extends TestCase
 
         self::assertTrue($handler->isResumeCommand('/open 018f0000-0000-7000-8000-00000000000a'));
         self::assertTrue($handler->isResumeCommand('/open@my_bot 018f0000-0000-7000-8000-00000000000a'));
+        self::assertTrue($handler->isResumeCommand("/open\u{00A0}01df73ed-3ca4-51c5-bca9-c595ad0ca7be"));
+        self::assertTrue($handler->isResumeCommand("/open\n01df73ed-3ca4-51c5-bca9-c595ad0ca7be"));
+        self::assertTrue($handler->isResumeCommand('/С‚Сopen 01df73ed-3ca4-51c5-bca9-c595ad0ca7be'));
         self::assertTrue($sessionId->equals($handler->parseResumeSessionId('/open 018f0000-0000-7000-8000-00000000000a')));
+        self::assertTrue(
+            Uuid::fromString('01df73ed-3ca4-51c5-bca9-c595ad0ca7be')->equals(
+                $handler->parseResumeSessionId("/open\u{00A0}01df73ed-3ca4-51c5-bca9-c595ad0ca7be"),
+            ),
+        );
         self::assertNull($handler->parseResumeSessionId('/open'));
         self::assertNull($handler->parseResumeSessionId('/open not-a-uuid'));
         self::assertFalse($handler->isResumeCommand('/new'));
