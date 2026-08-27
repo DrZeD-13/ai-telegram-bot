@@ -13,9 +13,11 @@ use App\Application\Logger\LoggerService;
 use App\Application\Port\ChatTurnHandler;
 use App\Application\Port\TelegramBotGateway;
 use App\Application\Port\UnitOfWork;
+use App\Domain\Entity\ConversationSession;
 use App\Domain\Entity\ProcessedTelegramMessage;
 use App\Domain\Exception\CoreException;
 use App\Domain\Exception\EmptyProcessedTelegramMessageErrorTextException;
+use App\Domain\Repository\ConversationSessionRepository;
 use App\Domain\Repository\ProcessedTelegramMessageRepository;
 use DateTimeImmutable;
 
@@ -24,10 +26,14 @@ final class ProcessIncomingTelegramMessages
     private const int CHUNK_SIZE = 100;
     private const string ERROR_DELIVERY = 'сообщение не удалось доставить';
 
+    /** @var array<int, ConversationSession> */
+    private array $activeSessions = [];
+
     public function __construct(
         private readonly TelegramBotGateway $telegramBotGateway,
         private readonly ProcessedTelegramMessageRepository $processedTelegramMessageRepository,
         private readonly ChatTurnHandler $handleChatTurn,
+        private readonly ConversationSessionRepository $conversationSessionRepository,
         private readonly UnitOfWork $unitOfWork,
         private readonly LoggerService $logger,
     ) {
@@ -92,46 +98,138 @@ final class ProcessIncomingTelegramMessages
         IncomingTelegramMessage $incomingMessage,
         string $text,
     ): ProcessedTelegramMessage {
-        $chatId = (int) $incomingMessage->chat->id;
+        $telegramChatId = (int) $incomingMessage->chat->id;
 
         if ($this->handleChatTurn->isResetCommand($text)) {
-            $this->handleChatTurn->resetSession($chatId);
-            $entity = $this->createEntity($incomingMessage, $text);
-
-            try {
-                $this->telegramBotGateway->sendMessage($chatId, ChatTurnHandler::RESET_NOTICE);
-                $entity->markProcessedSuccess();
-            } catch (TelegramBotException $exception) {
-                $this->logger->logException('Не удалось подтвердить сброс сессии пользователю', $exception, [
-                    'chatId' => (string) $chatId,
-                ]);
-                $entity->markProcessedError(self::ERROR_DELIVERY);
-            }
-
-            return $entity;
+            return $this->startNewSession($incomingMessage, $text, $telegramChatId);
         }
 
+        if ($this->handleChatTurn->isResumeCommand($text)) {
+            return $this->resumeSession($incomingMessage, $text, $telegramChatId);
+        }
+
+        $session = $this->activeSession($telegramChatId);
         $this->sendProcessingNotice($incomingMessage);
 
-        $result = $this->handleChatTurn->reply($chatId, $text);
+        $result = $this->handleChatTurn->reply($session->getId(), $text);
         if ($result->failed || $result->assistantText === null) {
             return $this->markFailed($incomingMessage, $text, ChatTurnHandler::ERROR_NEURAL_NETWORK);
         }
 
         try {
             foreach ($result->messages as $message) {
-                $this->telegramBotGateway->sendMessage($chatId, $message->text);
+                $this->telegramBotGateway->sendMessage($telegramChatId, $message->text);
             }
         } catch (TelegramBotException) {
             return $this->markFailed($incomingMessage, $text, self::ERROR_DELIVERY);
         }
 
-        $this->handleChatTurn->rememberTurn($chatId, $text, $result->assistantText);
+        $this->handleChatTurn->rememberTurn($session->getId(), $text, $result->assistantText);
 
         $processed = $this->createEntity($incomingMessage, $text);
         $processed->markProcessedSuccess();
 
         return $processed;
+    }
+
+    /**
+     * @throws CoreException
+     * @throws PersistenceException
+     */
+    private function startNewSession(
+        IncomingTelegramMessage $incomingMessage,
+        string $text,
+        int $telegramChatId,
+    ): ProcessedTelegramMessage {
+        $previous = $this->activeSession($telegramChatId);
+        $current = new ConversationSession($telegramChatId);
+        $this->unitOfWork->persist($current);
+        $this->activeSessions[$telegramChatId] = $current;
+
+        return $this->confirmSessionCommand(
+            $incomingMessage,
+            $text,
+            $telegramChatId,
+            $this->handleChatTurn->newSessionNotice($previous->getId(), $current->getId()),
+        );
+    }
+
+    /**
+     * @throws CoreException
+     * @throws PersistenceException
+     */
+    private function resumeSession(
+        IncomingTelegramMessage $incomingMessage,
+        string $text,
+        int $telegramChatId,
+    ): ProcessedTelegramMessage {
+        $sessionId = $this->handleChatTurn->parseResumeSessionId($text);
+        $session = $sessionId === null ? null : $this->conversationSessionRepository->findById($sessionId);
+        if ($session === null || !$session->belongsToTelegramChat($telegramChatId)) {
+            return $this->confirmSessionCommand(
+                $incomingMessage,
+                $text,
+                $telegramChatId,
+                ChatTurnHandler::ERROR_RESUME_SESSION,
+            );
+        }
+
+        $session->markActive();
+        $this->unitOfWork->persist($session);
+        $this->activeSessions[$telegramChatId] = $session;
+
+        return $this->confirmSessionCommand(
+            $incomingMessage,
+            $text,
+            $telegramChatId,
+            $this->handleChatTurn->resumeSessionNotice($session->getId()),
+        );
+    }
+
+    /**
+     * @throws CoreException
+     * @throws PersistenceException
+     */
+    private function confirmSessionCommand(
+        IncomingTelegramMessage $incomingMessage,
+        string $text,
+        int $telegramChatId,
+        string $notice,
+    ): ProcessedTelegramMessage {
+        $entity = $this->createEntity($incomingMessage, $text);
+
+        try {
+            $this->telegramBotGateway->sendMessage($telegramChatId, $notice);
+            $entity->markProcessedSuccess();
+        } catch (TelegramBotException $exception) {
+            $this->logger->logException('Не удалось подтвердить смену сессии пользователю', $exception, [
+                'chatId' => (string) $telegramChatId,
+            ]);
+            $entity->markProcessedError(self::ERROR_DELIVERY);
+        }
+
+        return $entity;
+    }
+
+    /**
+     * @throws CoreException
+     * @throws PersistenceException
+     */
+    private function activeSession(int $telegramChatId): ConversationSession
+    {
+        if (array_key_exists($telegramChatId, $this->activeSessions)) {
+            return $this->activeSessions[$telegramChatId];
+        }
+
+        $session = $this->conversationSessionRepository->findCurrentByTelegramChatId($telegramChatId);
+        if ($session === null) {
+            $session = new ConversationSession($telegramChatId);
+            $this->unitOfWork->persist($session);
+        }
+
+        $this->activeSessions[$telegramChatId] = $session;
+
+        return $session;
     }
 
     private function sendProcessingNotice(IncomingTelegramMessage $incomingMessage): void

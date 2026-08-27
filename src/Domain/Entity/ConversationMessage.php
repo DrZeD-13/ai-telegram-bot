@@ -8,12 +8,13 @@ use DateTimeImmutable;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Bridge\Doctrine\Types\UuidType;
+use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Uid\UuidV7;
 
 #[ORM\Entity]
 #[ORM\Table(
     name: 'conversation_message',
-    options: ['comment' => 'История диалога Telegram-чата с нейросетью'],
+    options: ['comment' => 'История сообщений сессии диалога с нейросетью'],
 )]
 #[ORM\Index(name: 'idx_conversation_message_chat', columns: ['chat_id', 'created_at'])]
 #[ORM\HasLifecycleCallbacks]
@@ -23,8 +24,8 @@ class ConversationMessage
     #[ORM\Column(type: UuidType::NAME)]
     private UuidV7 $id;
 
-    #[ORM\Column(type: Types::BIGINT, options: ['comment' => 'Идентификатор чата Telegram'])]
-    private int $chatId;
+    #[ORM\Column(type: UuidType::NAME, options: ['comment' => 'Идентификатор сессии диалога с нейросетью'])]
+    private Uuid $chatId;
 
     #[ORM\Column(length: 16, options: ['comment' => 'Роль сообщения: user или assistant'])]
     private string $role;
@@ -36,7 +37,7 @@ class ConversationMessage
     private DateTimeImmutable $createdAt;
 
     public function __construct(
-        int $chatId,
+        Uuid $chatId,
         string $role,
         ?string $content,
     ) {
@@ -58,7 +59,7 @@ class ConversationMessage
         return $this->id;
     }
 
-    public function getChatId(): int
+    public function getChatId(): Uuid
     {
         return $this->chatId;
     }

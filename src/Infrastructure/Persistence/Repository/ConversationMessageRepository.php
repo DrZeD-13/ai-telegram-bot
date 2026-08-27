@@ -8,9 +8,11 @@ use App\Domain\Entity\ConversationMessage;
 use App\Domain\Entity\ConversationMessageCollection;
 use App\Domain\Exception\CoreException;
 use App\Domain\Repository\ConversationMessageRepository as ConversationMessageRepositoryInterface;
+use DateTimeImmutable;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\DependencyInjection\Attribute\AsAlias;
+use Symfony\Component\Uid\Uuid;
 use Throwable;
 
 /**
@@ -29,7 +31,7 @@ class ConversationMessageRepository extends ServiceEntityRepository implements C
     /**
      * @throws CoreException
      */
-    public function findHistoryByChatId(int $chatId): ConversationMessageCollection
+    public function findHistoryByChatId(Uuid $chatId): ConversationMessageCollection
     {
         try {
             /** @var list<ConversationMessage> $messages */
@@ -47,7 +49,7 @@ class ConversationMessageRepository extends ServiceEntityRepository implements C
             throw $exception;
         } catch (Throwable $exception) {
             throw new CoreException(
-                message: 'Не удалось загрузить историю диалога Telegram',
+                message: 'Не удалось загрузить историю диалога',
                 previous: $exception,
             );
         }
@@ -56,13 +58,13 @@ class ConversationMessageRepository extends ServiceEntityRepository implements C
     /**
      * @throws CoreException
      */
-    public function deleteByChatId(int $chatId): int
+    public function deleteOlderThan(DateTimeImmutable $cutoff): int
     {
         try {
             $deleted = $this->createQueryBuilder('message')
                 ->delete()
-                ->where('message.chatId = :chatId')
-                ->setParameter('chatId', $chatId)
+                ->where('message.createdAt < :cutoff')
+                ->setParameter('cutoff', $cutoff)
                 ->getQuery()
                 ->execute();
 
@@ -71,7 +73,7 @@ class ConversationMessageRepository extends ServiceEntityRepository implements C
             throw $exception;
         } catch (Throwable $exception) {
             throw new CoreException(
-                message: 'Не удалось очистить историю диалога Telegram',
+                message: 'Не удалось удалить устаревшую историю диалогов',
                 previous: $exception,
             );
         }

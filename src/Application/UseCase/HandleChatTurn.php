@@ -20,6 +20,8 @@ use App\Domain\Entity\ConversationMessage;
 use App\Domain\Exception\CoreException;
 use App\Domain\Repository\ConversationMessageRepository;
 use Symfony\Component\DependencyInjection\Attribute\AsAlias;
+use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Uid\UuidV7;
 
 /**
  * Shared dialog turn for Telegram and the console: history, MCP agent, /new, split replies.
@@ -45,26 +47,99 @@ final class HandleChatTurn implements ChatTurnHandler
 
     public function isResetCommand(string $text): bool
     {
-        $normalized = strtolower(trim($text));
+        $token = $this->slashCommandToken($text);
 
-        return $normalized === self::RESET_COMMAND || str_starts_with($normalized, self::RESET_COMMAND . '@');
+        return $token === self::RESET_COMMAND || str_starts_with($token, self::RESET_COMMAND . '@');
     }
 
-    /**
-     * @throws CoreException
-     */
-    public function resetSession(int $sessionId): void
+    public function isResumeCommand(string $text): bool
     {
-        $this->conversationMessageRepository->deleteByChatId($sessionId);
+        $line = strtolower($this->commandLine($text));
+
+        return $line === '/open'
+            || str_starts_with($line, '/open ')
+            || str_starts_with($line, '/open@');
+    }
+
+    public function parseResumeSessionId(string $text): ?Uuid
+    {
+        if (!preg_match('/^\/open(?:@[^\s]+)?\s+(\S+)/i', $this->commandLine($text), $matches)) {
+            return null;
+        }
+
+        $rawId = $matches[1];
+        if (!Uuid::isValid($rawId)) {
+            return null;
+        }
+
+        return Uuid::fromString($rawId);
+    }
+
+    public function newSessionId(): Uuid
+    {
+        return new UuidV7();
+    }
+
+    public function newSessionNotice(Uuid $previousSessionId, Uuid $currentSessionId): string
+    {
+        $previous = $previousSessionId->toRfc4122();
+        $current = $currentSessionId->toRfc4122();
+
+        return "Новая сессия начата. История предыдущей сохранена.\n\n"
+            . "Предыдущая сессия:\n{$previous}\n\n"
+            . "Текущая сессия:\n{$current}\n\n"
+            . "Вернуться к предыдущей: /open {$previous}";
+    }
+
+    public function resumeSessionNotice(Uuid $currentSessionId): string
+    {
+        $current = $currentSessionId->toRfc4122();
+
+        return "Сессия восстановлена.\n\nТекущая сессия:\n{$current}";
+    }
+
+    private function commandLine(string $text): string
+    {
+        $text = trim($text);
+        if (str_starts_with($text, "\u{FEFF}")) {
+            $text = substr($text, strlen("\u{FEFF}"));
+            $text = trim($text);
+        }
+        if (!mb_check_encoding($text, 'UTF-8')) {
+            $text = mb_convert_encoding($text, 'UTF-8', 'UTF-8');
+        }
+
+        return $text;
     }
 
     /**
-     * Runs the agent over stored history and returns messages to show the user.
-     * Does not persist the new turn: call {@see rememberTurn()} after the reply was delivered.
-     *
+     * Slash-commands are ASCII. Invalid bytes and non-ASCII junk around `/new`
+     * must not prevent a session reset (console encoding glitches).
+     */
+    private function slashCommandToken(string $text): string
+    {
+        $text = trim($text);
+        if (str_starts_with($text, "\u{FEFF}")) {
+            $text = substr($text, strlen("\u{FEFF}"));
+        }
+        if (!mb_check_encoding($text, 'UTF-8')) {
+            $text = mb_convert_encoding($text, 'UTF-8', 'UTF-8');
+        }
+
+        $text = strtolower($text);
+        if ($text === '' || !str_starts_with($text, '/')) {
+            return $text;
+        }
+
+        $ascii = preg_replace('/[^a-z0-9\/@_]/', '', $text);
+
+        return is_string($ascii) ? $ascii : $text;
+    }
+
+    /**
      * @throws CoreException
      */
-    public function reply(int $sessionId, string $text): ChatTurnResult
+    public function reply(Uuid $sessionId, string $text): ChatTurnResult
     {
         $modelId = $this->loadModelId();
         if ($modelId === null) {
@@ -82,7 +157,7 @@ final class HandleChatTurn implements ChatTurnHandler
         }
 
         $this->logger->info('Агент вернул ответ пользователю', [
-            'sessionId' => (string) $sessionId,
+            'sessionId' => $sessionId->toRfc4122(),
             'message' => $text,
             'response' => $answer,
         ]);
@@ -93,7 +168,7 @@ final class HandleChatTurn implements ChatTurnHandler
     /**
      * @throws PersistenceException
      */
-    public function rememberTurn(int $sessionId, string $userText, string $assistantText): void
+    public function rememberTurn(Uuid $sessionId, string $userText, string $assistantText): void
     {
         $this->unitOfWork->persist(new ConversationMessage($sessionId, 'user', $userText));
         $this->unitOfWork->persist(new ConversationMessage($sessionId, 'assistant', $assistantText));
@@ -105,7 +180,7 @@ final class HandleChatTurn implements ChatTurnHandler
      *
      * @throws CoreException
      */
-    private function buildConversation(int $sessionId, string $text): array
+    private function buildConversation(Uuid $sessionId, string $text): array
     {
         $messages = [new ChatMessage('system', self::SYSTEM_PROMPT)];
 

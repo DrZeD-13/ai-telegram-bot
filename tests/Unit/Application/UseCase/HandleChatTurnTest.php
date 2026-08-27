@@ -21,10 +21,15 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversMethod;
 use PHPUnit\Framework\MockObject\Stub;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Uid\Uuid;
 
 #[CoversClass(HandleChatTurn::class)]
 #[CoversMethod(HandleChatTurn::class, 'isResetCommand')]
-#[CoversMethod(HandleChatTurn::class, 'resetSession')]
+#[CoversMethod(HandleChatTurn::class, 'isResumeCommand')]
+#[CoversMethod(HandleChatTurn::class, 'parseResumeSessionId')]
+#[CoversMethod(HandleChatTurn::class, 'newSessionId')]
+#[CoversMethod(HandleChatTurn::class, 'newSessionNotice')]
+#[CoversMethod(HandleChatTurn::class, 'resumeSessionNotice')]
 #[CoversMethod(HandleChatTurn::class, 'reply')]
 #[CoversMethod(HandleChatTurn::class, 'rememberTurn')]
 final class HandleChatTurnTest extends TestCase
@@ -36,16 +41,45 @@ final class HandleChatTurnTest extends TestCase
         self::assertTrue($handler->isResetCommand('/new'));
         self::assertTrue($handler->isResetCommand(' /new '));
         self::assertTrue($handler->isResetCommand('/new@my_bot'));
+        self::assertTrue($handler->isResetCommand("/new\xD1"));
+        self::assertTrue($handler->isResetCommand('/С‚Сnew'));
         self::assertFalse($handler->isResetCommand('new'));
         self::assertFalse($handler->isResetCommand('/start'));
+        self::assertFalse($handler->isResetCommand('сделай /new пожалуйста'));
     }
 
-    public function testResetSessionDeletesHistory(): void
+    public function testResumeCommandParsesUuid(): void
     {
-        $conversationRepository = $this->createMock(ConversationMessageRepository::class);
-        $conversationRepository->expects(self::once())->method('deleteByChatId')->with(42)->willReturn(3);
+        $handler = $this->handler();
+        $sessionId = Uuid::fromString('018f0000-0000-7000-8000-00000000000a');
 
-        $this->handler(conversationRepository: $conversationRepository)->resetSession(42);
+        self::assertTrue($handler->isResumeCommand('/open 018f0000-0000-7000-8000-00000000000a'));
+        self::assertTrue($handler->isResumeCommand('/open@my_bot 018f0000-0000-7000-8000-00000000000a'));
+        self::assertTrue($sessionId->equals($handler->parseResumeSessionId('/open 018f0000-0000-7000-8000-00000000000a')));
+        self::assertNull($handler->parseResumeSessionId('/open'));
+        self::assertNull($handler->parseResumeSessionId('/open not-a-uuid'));
+        self::assertFalse($handler->isResumeCommand('/new'));
+    }
+
+    public function testNewSessionNoticeContainsPreviousAndCurrentIds(): void
+    {
+        $previous = Uuid::fromString('018f0000-0000-7000-8000-000000000001');
+        $current = Uuid::fromString('018f0000-0000-7000-8000-000000000002');
+        $notice = $this->handler()->newSessionNotice($previous, $current);
+
+        self::assertStringContainsString($previous->toRfc4122(), $notice);
+        self::assertStringContainsString($current->toRfc4122(), $notice);
+        self::assertStringContainsString('/open ' . $previous->toRfc4122(), $notice);
+        self::assertStringContainsString('сохранена', $notice);
+    }
+
+    public function testNewSessionIdIsUniqueUuid(): void
+    {
+        $handler = $this->handler();
+        $first = $handler->newSessionId();
+        $second = $handler->newSessionId();
+
+        self::assertFalse($first->equals($second));
     }
 
     public function testReplyIncludesHistoryAndCurrentUserText(): void
@@ -74,17 +108,18 @@ final class HandleChatTurnTest extends TestCase
             )
             ->willReturn('ответ агента');
 
+        $sessionId = Uuid::fromString('018f0000-0000-7000-8000-000000000005');
         $conversationRepository = $this->createStub(ConversationMessageRepository::class);
         $conversationRepository->method('findHistoryByChatId')->willReturn(new ConversationMessageCollection(
-            new ConversationMessage(5, 'user', 'прошлый вопрос'),
-            new ConversationMessage(5, 'assistant', 'прошлый ответ'),
+            new ConversationMessage($sessionId, 'user', 'прошлый вопрос'),
+            new ConversationMessage($sessionId, 'assistant', 'прошлый ответ'),
         ));
 
         $result = $this->handler(
             neuralNetworkGateway: $this->modelGateway(),
             conversationRepository: $conversationRepository,
             agent: $agent,
-        )->reply(5, 'третий вопрос');
+        )->reply($sessionId, 'третий вопрос');
 
         self::assertFalse($result->failed);
         self::assertSame('ответ агента', $result->assistantText);
@@ -100,7 +135,7 @@ final class HandleChatTurnTest extends TestCase
         $result = $this->handler(
             neuralNetworkGateway: $this->modelGateway(),
             agent: $agent,
-        )->reply(1, 'длинный запрос');
+        )->reply($this->sessionId(), 'длинный запрос');
 
         self::assertFalse($result->failed);
         self::assertCount(3, $result->messages);
@@ -117,7 +152,7 @@ final class HandleChatTurnTest extends TestCase
         $result = $this->handler(
             neuralNetworkGateway: $this->modelGateway(),
             agent: $agent,
-        )->reply(1, str_repeat('я', 5000));
+        )->reply($this->sessionId(), str_repeat('я', 5000));
 
         self::assertFalse($result->failed);
     }
@@ -130,7 +165,7 @@ final class HandleChatTurnTest extends TestCase
         $result = $this->handler(
             neuralNetworkGateway: $this->modelGateway(),
             agent: $agent,
-        )->reply(1, 'Привет');
+        )->reply($this->sessionId(), 'Привет');
 
         self::assertTrue($result->failed);
         self::assertNull($result->assistantText);
@@ -148,7 +183,7 @@ final class HandleChatTurnTest extends TestCase
         $result = $this->handler(
             neuralNetworkGateway: $neuralNetworkGateway,
             agent: $agent,
-        )->reply(1, 'Привет');
+        )->reply($this->sessionId(), 'Привет');
 
         self::assertTrue($result->failed);
     }
@@ -169,7 +204,7 @@ final class HandleChatTurnTest extends TestCase
             },
         );
 
-        $this->handler(unitOfWork: $unitOfWork)->rememberTurn(9, 'вопрос', 'ответ');
+        $this->handler(unitOfWork: $unitOfWork)->rememberTurn($this->sessionId(), 'вопрос', 'ответ');
 
         self::assertTrue($flushed);
         self::assertCount(2, $persisted);
@@ -179,7 +214,12 @@ final class HandleChatTurnTest extends TestCase
         self::assertSame('вопрос', $persisted[0]->getContent());
         self::assertSame('assistant', $persisted[1]->getRole());
         self::assertSame('ответ', $persisted[1]->getContent());
-        self::assertSame(9, $persisted[0]->getChatId());
+        self::assertTrue($this->sessionId()->equals($persisted[0]->getChatId()));
+    }
+
+    private function sessionId(): Uuid
+    {
+        return Uuid::fromString('018f0000-0000-7000-8000-000000000009');
     }
 
     private function handler(

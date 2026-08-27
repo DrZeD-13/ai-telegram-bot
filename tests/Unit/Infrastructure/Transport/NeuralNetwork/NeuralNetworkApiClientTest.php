@@ -339,12 +339,51 @@ final class NeuralNetworkApiClientTest extends TestCase
         self::assertFalse($result->hasToolCalls());
     }
 
+    public function testCreateChatCompletionEncodesInvalidUtf8InsteadOfFailing(): void
+    {
+        $httpClient = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+            self::assertSame('POST', $method);
+            $body = self::jsonBody($options);
+            self::assertSame('gpt-4', $body['model']);
+            self::assertIsArray($body['messages']);
+            self::assertArrayHasKey(0, $body['messages']);
+            $message = $body['messages'][0];
+            self::assertIsArray($message);
+            self::assertIsString($message['content']);
+            self::assertTrue(mb_check_encoding($message['content'], 'UTF-8'));
+            self::assertStringStartsWith('hi', $message['content']);
+
+            return new MockResponse(
+                json_encode([
+                    'id' => 'cmpl-utf8',
+                    'choices' => [
+                        ['message' => ['role' => 'assistant', 'content' => 'ok']],
+                    ],
+                ], JSON_THROW_ON_ERROR),
+                ['http_code' => 200],
+            );
+        });
+
+        $result = $this->createClient($httpClient)->createChatCompletion(new ChatCompletionRequest(
+            'gpt-4',
+            new ChatMessageCollection(new ChatMessage('user', "hi\xFF\xFEbroken")),
+        ));
+
+        self::assertSame('cmpl-utf8', $result->id);
+        self::assertSame('ok', $result->text);
+    }
+
     public function testCreateChatCompletionSendsToolsAndMapsToolCalls(): void
     {
         $httpClient = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
             self::assertSame('POST', $method);
             $body = self::jsonBody($options);
             self::assertSame('gpt-4', $body['model']);
+            self::assertIsArray($body['messages']);
+            self::assertArrayHasKey(0, $body['messages']);
+            $userMessage = $body['messages'][0];
+            self::assertIsArray($userMessage);
+            self::assertSame('привет меня зовут Павел, а тебя как?', $userMessage['content']);
             self::assertIsArray($body['tools']);
             self::assertArrayHasKey(0, $body['tools']);
             $firstTool = $body['tools'][0];
@@ -352,6 +391,10 @@ final class NeuralNetworkApiClientTest extends TestCase
             self::assertSame('function', $firstTool['type']);
             self::assertIsArray($firstTool['function']);
             self::assertSame('shell', $firstTool['function']['name']);
+            self::assertSame(
+                'Выполнить команду в shell (оболочке) хоста и получить stdout, stderr и код возврата.',
+                $firstTool['function']['description'],
+            );
 
             return new MockResponse(
                 json_encode([
@@ -378,10 +421,10 @@ final class NeuralNetworkApiClientTest extends TestCase
 
         $result = $this->createClient($httpClient)->createChatCompletion(new ChatCompletionRequest(
             model: 'gpt-4',
-            messages: new ChatMessageCollection(new ChatMessage('user', 'ls')),
+            messages: new ChatMessageCollection(new ChatMessage('user', 'привет меня зовут Павел, а тебя как?')),
             tools: new ToolDefinitionCollection(new ToolDefinition(
                 name: 'shell',
-                description: 'Run a shell command',
+                description: 'Выполнить команду в shell (оболочке) хоста и получить stdout, stderr и код возврата.',
                 parameters: ['type' => 'object'],
             )),
         ));

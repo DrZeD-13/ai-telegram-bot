@@ -49,6 +49,16 @@ final class McpShellCommandGatewayTest extends TestCase
         self::assertSame("abcdefgh\n… [вывод обрезан]", $result->output);
     }
 
+    public function testBinaryOutputIsConvertedToUtf8(): void
+    {
+        $result = $this->gateway()->run('printf ' . escapeshellarg("ok\xFF\xFEbin"));
+
+        self::assertSame(0, $result->exitCode);
+        self::assertTrue(mb_check_encoding($result->output, 'UTF-8'));
+        self::assertStringStartsWith('ok', $result->output);
+        self::assertStringContainsString('bin', $result->output);
+    }
+
     public function testWorkingDirectoryIsApplied(): void
     {
         $result = $this->gateway(workingDirectory: '/tmp')->run('pwd');

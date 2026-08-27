@@ -18,8 +18,10 @@ use App\Application\Port\TelegramBotGateway;
 use App\Application\Port\UnitOfWork;
 use App\Application\Port\ChatTurnHandler;
 use App\Application\UseCase\ProcessIncomingTelegramMessages;
+use App\Domain\Entity\ConversationSession;
 use App\Domain\Entity\ProcessedTelegramMessage;
 use App\Domain\Entity\ProcessedTelegramMessageStatus;
+use App\Domain\Repository\ConversationSessionRepository;
 use App\Domain\Repository\ProcessedTelegramMessageRepository;
 use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -110,7 +112,8 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 
         $handleChatTurn = $this->createMock(ChatTurnHandler::class);
         $handleChatTurn->method('isResetCommand')->willReturn(true);
-        $handleChatTurn->expects(self::once())->method('resetSession')->with(42);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
+        $handleChatTurn->method('newSessionNotice')->willReturn('новая сессия uuid');
         $handleChatTurn->expects(self::never())->method('reply');
 
         $persisted = [];
@@ -120,10 +123,98 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             unitOfWork: $this->recordingUnitOfWork($persisted),
         )->execute();
 
-        self::assertSame([ChatTurnHandler::RESET_NOTICE], $sent);
-        self::assertCount(1, $persisted);
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $persisted[0]);
-        self::assertSame(ProcessedTelegramMessageStatus::ProcessedSuccess, $persisted[0]->getStatus());
+        self::assertSame(['новая сессия uuid'], $sent);
+        $processed = array_values(array_filter(
+            $persisted,
+            static fn (object $entity): bool => $entity instanceof ProcessedTelegramMessage,
+        ));
+        self::assertCount(1, $processed);
+        self::assertSame(ProcessedTelegramMessageStatus::ProcessedSuccess, $processed[0]->getStatus());
+        $sessions = array_values(array_filter(
+            $persisted,
+            static fn (object $entity): bool => $entity instanceof ConversationSession,
+        ));
+        self::assertGreaterThanOrEqual(1, count($sessions));
+    }
+
+    public function testOpenCommandRestoresSessionOwnedByThisTelegramChat(): void
+    {
+        $session = new ConversationSession(42);
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
+            $this->incomingMessage(chatId: 42, text: '/open ' . $session->getId()->toRfc4122()),
+        ));
+
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
+
+                return $this->sentMessage();
+            },
+        );
+
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(true);
+        $handleChatTurn->method('parseResumeSessionId')->willReturn($session->getId());
+        $handleChatTurn->method('resumeSessionNotice')->willReturn('сессия восстановлена');
+        $handleChatTurn->expects(self::never())->method('reply');
+
+        $sessions = $this->createStub(ConversationSessionRepository::class);
+        $sessions->method('findById')->willReturn($session);
+
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            conversationSessions: $sessions,
+        )->execute();
+
+        self::assertSame(['сессия восстановлена'], $sent);
+    }
+
+    public function testOpenCommandRejectsForeignOrInvalidSession(): void
+    {
+        $foreign = new ConversationSession(99);
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
+            $this->incomingMessage(updateId: 1, messageId: 1, chatId: 42, text: '/open not-a-uuid'),
+            $this->incomingMessage(
+                updateId: 2,
+                messageId: 2,
+                chatId: 42,
+                text: '/open ' . $foreign->getId()->toRfc4122(),
+            ),
+        ));
+
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
+
+                return $this->sentMessage();
+            },
+        );
+
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(true);
+        $handleChatTurn->method('parseResumeSessionId')->willReturnOnConsecutiveCalls(null, $foreign->getId());
+        $handleChatTurn->expects(self::never())->method('reply');
+
+        $sessions = $this->createStub(ConversationSessionRepository::class);
+        $sessions->method('findById')->willReturn($foreign);
+
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            conversationSessions: $sessions,
+        )->execute();
+
+        self::assertSame(
+            [ChatTurnHandler::ERROR_RESUME_SESSION, ChatTurnHandler::ERROR_RESUME_SESSION],
+            $sent,
+        );
     }
 
     public function testSkipsEmptyTextAndDuplicateAlreadyInDatabase(): void
@@ -174,10 +265,9 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         )->execute();
 
         self::assertSame([ChatTurnHandler::PROCESSING_NOTICE, 'ответ агента'], $sent);
-        self::assertCount(1, $persisted);
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $persisted[0]);
-        self::assertSame(99, $persisted[0]->getChatId());
-        self::assertSame('первый', $persisted[0]->getText());
+        $processed = $this->firstProcessed($persisted);
+        self::assertSame(99, $processed->getChatId());
+        self::assertSame('первый', $processed->getText());
     }
 
     public function testSuccessSendsProcessingNoticeThenReply(): void
@@ -205,18 +295,24 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             },
         );
 
+        $session = new ConversationSession(88);
+        $sessions = $this->createStub(ConversationSessionRepository::class);
+        $sessions->method('findCurrentByTelegramChatId')->willReturn($session);
+
         $handleChatTurn = $this->createMock(ChatTurnHandler::class);
         $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
         $handleChatTurn->expects(self::once())
             ->method('reply')
-            ->with(88, 'Короткий вопрос')
+            ->with($session->getId(), 'Короткий вопрос')
             ->willReturn($this->successResult('ответ агента'));
-        $handleChatTurn->expects(self::once())->method('rememberTurn')->with(88, 'Короткий вопрос', 'ответ агента');
+        $handleChatTurn->expects(self::once())->method('rememberTurn')->with($session->getId(), 'Короткий вопрос', 'ответ агента');
 
         $persisted = [];
         $this->createUseCase(
             telegramBotGateway: $telegramBotGateway,
             handleChatTurn: $handleChatTurn,
+            conversationSessions: $sessions,
             unitOfWork: $this->recordingUnitOfWork($persisted),
         )->execute();
 
@@ -344,6 +440,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 
         $handleChatTurn = $this->createMock(ChatTurnHandler::class);
         $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
         $handleChatTurn->method('reply')->willReturn($this->successResult('ответ агента'));
         $handleChatTurn->expects(self::never())->method('rememberTurn');
 
@@ -430,6 +527,7 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         ?TelegramBotGateway $telegramBotGateway = null,
         ?ProcessedTelegramMessageRepository $processedRepository = null,
         ?ChatTurnHandler $handleChatTurn = null,
+        ?ConversationSessionRepository $conversationSessions = null,
         ?UnitOfWork $unitOfWork = null,
         ?LoggerService $logger = null,
     ): ProcessIncomingTelegramMessages {
@@ -437,15 +535,26 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             $telegramBotGateway ?? $this->createStub(TelegramBotGateway::class),
             $processedRepository ?? $this->emptyProcessedRepository(),
             $handleChatTurn ?? $this->successfulChatTurnHandler('ответ агента'),
+            $conversationSessions ?? $this->emptyConversationSessions(),
             $unitOfWork ?? $this->createStub(UnitOfWork::class),
             $logger ?? $this->createStub(LoggerService::class),
         );
+    }
+
+    private function emptyConversationSessions(): ConversationSessionRepository&Stub
+    {
+        $repository = $this->createStub(ConversationSessionRepository::class);
+        $repository->method('findCurrentByTelegramChatId')->willReturn(null);
+        $repository->method('findById')->willReturn(null);
+
+        return $repository;
     }
 
     private function successfulChatTurnHandler(string $answer): ChatTurnHandler&Stub
     {
         $handleChatTurn = $this->createStub(ChatTurnHandler::class);
         $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
         $handleChatTurn->method('reply')->willReturn($this->successResult($answer));
 
         return $handleChatTurn;

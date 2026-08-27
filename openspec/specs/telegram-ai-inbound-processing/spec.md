@@ -53,16 +53,33 @@ The system MUST NOT create a second record for a chat identifier and message ide
 - **WHEN** an incoming message has no text
 - **THEN** the system does not persist a record for it and does not call the neural network
 
-### Requirement: Reset conversation with /new
+### Requirement: Start a new neural-network session with /new
 
-The system SHALL treat incoming text `/new` (and `/new@botname`) as a session reset for that Telegram chat. It MUST delete stored conversation history for the chat, MUST NOT call the neural network, MUST send a confirmation that the session was reset, and MUST store a processed-success record for the command.
+The system SHALL treat incoming text `/new` (and `/new@botname`) as starting a new neural-network session for that Telegram chat. It MUST keep stored conversation history of the previous session, MUST NOT call the neural network, MUST send the previous session UUID and the new current session UUID so the user can return later, and MUST store a processed-success record for the command.
 
-#### Scenario: /new clears the chat session
+#### Scenario: /new starts a new session and preserves history
 
 - **WHEN** an incoming message text is `/new` or starts with `/new@`
-- **THEN** the system deletes conversation history for that chat
+- **THEN** the system does not delete conversation history of the previous session
 - **AND** it does not call the neural network
-- **AND** the chat receives `Сессия сброшена. Можете начать новый диалог.`
+- **AND** the chat receives the previous session UUID and the new current session UUID
+
+### Requirement: Resume a neural-network session with /open
+
+The system SHALL treat incoming text `/open <uuid>` (and `/open@botname <uuid>`) as switching that Telegram chat to a previously created session owned by the same chat. It MUST NOT call the neural network.
+
+#### Scenario: /open restores a saved session
+
+- **WHEN** an incoming message text is `/open` with a valid session UUID that belongs to this Telegram chat
+- **THEN** further user messages in that chat use the restored session history
+- **AND** the chat receives the current session UUID
+
+#### Scenario: /open rejects invalid or foreign session UUID
+
+- **WHEN** an incoming message text is `/open` with a missing argument, a value that is not a UUID, a UUID that does not exist, or a session UUID owned by another Telegram chat
+- **THEN** the chat receives `такого чата не существует`
+- **AND** the system does not switch the current session
+- **AND** it does not call the neural network
 
 ### Requirement: Acknowledge processing before the agent runs
 

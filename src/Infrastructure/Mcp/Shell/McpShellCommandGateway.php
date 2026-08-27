@@ -123,10 +123,20 @@ final readonly class McpShellCommandGateway implements ShellCommandGateway
 
     private function cap(string $value): string
     {
+        $value = $this->utf8String($value);
         if ($this->maxOutputLength <= 0 || mb_strlen($value) <= $this->maxOutputLength) {
             return $value;
         }
 
         return mb_substr($value, 0, $this->maxOutputLength) . "\n… [вывод обрезан]";
+    }
+
+    private function utf8String(string $value): string
+    {
+        if (mb_check_encoding($value, 'UTF-8')) {
+            return $value;
+        }
+
+        return mb_convert_encoding($value, 'UTF-8', 'UTF-8');
     }
 }

@@ -6,20 +6,22 @@ namespace App\Domain\Repository;
 
 use App\Domain\Entity\ConversationMessageCollection;
 use App\Domain\Exception\CoreException;
+use DateTimeImmutable;
+use Symfony\Component\Uid\Uuid;
 
 interface ConversationMessageRepository
 {
     /**
-     * Returns the stored dialog history for a chat, ordered from oldest to newest.
+     * Returns the stored dialog history for a session, ordered from oldest to newest.
      *
      * @throws CoreException
      */
-    public function findHistoryByChatId(int $chatId): ConversationMessageCollection;
+    public function findHistoryByChatId(Uuid $chatId): ConversationMessageCollection;
 
     /**
-     * Removes the whole stored dialog history for a chat and returns how many rows were deleted.
+     * Deletes stored messages created before the cutoff and returns how many rows were removed.
      *
      * @throws CoreException
      */
-    public function deleteByChatId(int $chatId): int;
+    public function deleteOlderThan(DateTimeImmutable $cutoff): int;
 }
