@@ -1,24 +1,30 @@
 FROM php:8.4-fpm
 
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Europe/Moscow
+
 # Установка необходимых пакетов
-RUN apt-get update && apt-get install -y \
-    zip \
-    git \
-    libicu-dev \
-    libzip-dev \
-    nano \
-    mc \
-    pv \
-    htop \
-    curl \
-    libpng-dev \
-    libmagickwand-dev \
-    supervisor \
-    wget \
-    unzip \
-    librabbitmq-dev \
-    libssh-dev \
-    libssl-dev
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        zip \
+        git \
+        libicu-dev \
+        libzip-dev \
+        nano \
+        mc \
+        pv \
+        htop \
+        curl \
+        libpng-dev \
+        libxml2-dev \
+        supervisor \
+        wget \
+        unzip \
+        librabbitmq-dev \
+        libssh-dev \
+        libssl-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Установка PECL расширений
 RUN pecl install xhprof && \
@@ -31,9 +37,6 @@ RUN pecl install xdebug && \
 # Установка расширений PHP
 RUN docker-php-ext-install intl zip opcache pdo pdo_mysql bcmath sockets gd soap sockets
 RUN yes | pecl install apcu
-
-# Очистка
-RUN apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
