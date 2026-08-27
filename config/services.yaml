@@ -8,6 +8,10 @@
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
 parameters:
     env(TELEGRAM_USE_FIXTURES): 'false'
+    env(MCP_SHELL_ENABLED): 'true'
+    env(MCP_SHELL_TIMEOUT): '30'
+    env(MCP_SHELL_WORKDIR): ''
+    env(MCP_SHELL_MAX_OUTPUT): '8000'
 
 services:
     # default configuration for services in *this* file
