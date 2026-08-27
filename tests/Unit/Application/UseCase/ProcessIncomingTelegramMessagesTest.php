@@ -4,29 +4,28 @@ declare(strict_types=1);
 
 namespace App\Tests\Unit\Application\UseCase;
 
-use App\Application\Dto\ChatCompletionRequest;
-use App\Application\Dto\ChatCompletionResult;
 use App\Application\Dto\IncomingTelegramMessage;
 use App\Application\Dto\IncomingTelegramMessageCollection;
-use App\Application\Dto\NeuralNetworkModel;
-use App\Application\Dto\NeuralNetworkModelCollection;
+use App\Application\Dto\ChatTurnMessage;
+use App\Application\Dto\ChatTurnMessageCollection;
+use App\Application\Dto\ChatTurnResult;
 use App\Application\Dto\SentTelegramMessage;
 use App\Application\Dto\TelegramChat;
 use App\Application\Dto\TelegramUser;
-use App\Application\Exception\NeuralNetworkTransportException;
 use App\Application\Exception\TelegramBotTransportException;
 use App\Application\Logger\LoggerService;
-use App\Application\Port\NeuralNetworkGateway;
 use App\Application\Port\TelegramBotGateway;
 use App\Application\Port\UnitOfWork;
+use App\Application\Port\ChatTurnHandler;
 use App\Application\UseCase\ProcessIncomingTelegramMessages;
+use App\Domain\Entity\ConversationSession;
 use App\Domain\Entity\ProcessedTelegramMessage;
 use App\Domain\Entity\ProcessedTelegramMessageStatus;
+use App\Domain\Repository\ConversationSessionRepository;
 use App\Domain\Repository\ProcessedTelegramMessageRepository;
 use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversMethod;
-use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\MockObject\Stub;
 use PHPUnit\Framework\TestCase;
 
@@ -36,18 +35,20 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
 {
     public function testEmptyInboxDoesNotFlush(): void
     {
-        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
-        $telegramBotGateway->expects(self::once())
-            ->method('getMessages')
-            ->with(null)
-            ->willReturn(new IncomingTelegramMessageCollection());
-        $telegramBotGateway->expects(self::never())->method('sendMessage');
+        $requestedOffset = 'unset';
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturnCallback(
+            function (?int $offset) use (&$requestedOffset): IncomingTelegramMessageCollection {
+                $requestedOffset = $offset;
 
-        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
-        $neuralNetworkGateway->expects(self::never())->method('listModels');
-        $neuralNetworkGateway->expects(self::never())->method('createChatCompletion');
+                return new IncomingTelegramMessageCollection();
+            },
+        );
 
-        $repository = $this->createRepository();
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->expects(self::never())->method('reply');
+
+        $repository = $this->createProcessedRepository();
         $repository->method('findMaxUpdateId')->willReturn(null);
 
         $unitOfWork = $this->createMock(UnitOfWork::class);
@@ -56,22 +57,28 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         $unitOfWork->expects(self::once())->method('clear');
 
         $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $repository,
-            $unitOfWork,
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            processedRepository: $repository,
+            unitOfWork: $unitOfWork,
         )->execute();
+
+        self::assertNull($requestedOffset);
     }
 
     public function testSubsequentPollUsesMaxUpdateIdPlusOne(): void
     {
-        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
-        $telegramBotGateway->expects(self::once())
-            ->method('getMessages')
-            ->with(11)
-            ->willReturn(new IncomingTelegramMessageCollection());
+        $requestedOffset = null;
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturnCallback(
+            function (?int $offset) use (&$requestedOffset): IncomingTelegramMessageCollection {
+                $requestedOffset = $offset;
 
-        $repository = $this->createRepository();
+                return new IncomingTelegramMessageCollection();
+            },
+        );
+
+        $repository = $this->createProcessedRepository();
         $repository->method('findMaxUpdateId')->willReturn(10);
 
         $unitOfWork = $this->createMock(UnitOfWork::class);
@@ -79,86 +86,170 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         $unitOfWork->expects(self::once())->method('clear');
 
         $this->createUseCase(
-            $telegramBotGateway,
-            $this->createNeuralNetworkGateway(),
-            $repository,
-            $unitOfWork,
+            telegramBotGateway: $telegramBotGateway,
+            processedRepository: $repository,
+            unitOfWork: $unitOfWork,
         )->execute();
+
+        self::assertSame(11, $requestedOffset);
     }
 
-    public function testChunkOfHundredPersistsEachMessageAndFlushesOncePerChunk(): void
+    public function testResetCommandClearsConversationWithoutCallingAgent(): void
     {
-        $incoming = [];
-        for ($i = 1; $i <= 101; ++$i) {
-            $incoming[] = $this->incomingMessage(updateId: $i, messageId: $i, text: 'вопрос ' . $i);
-        }
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
+            $this->incomingMessage(chatId: 42, text: '/new'),
+        ));
 
-        $telegramBotGateway = $this->createTelegramBotGateway();
-        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(...$incoming));
-        $telegramBotGateway->method('sendMessage')->willReturn($this->sentMessage());
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
 
-        $neuralNetworkGateway = $this->successfulNeuralNetworkGateway();
-
-        $persistCount = 0;
-        $persistCountsAtFlush = [];
-        $unitOfWork = $this->createUnitOfWork();
-        $unitOfWork->method('persist')->willReturnCallback(
-            static function () use (&$persistCount): void {
-                ++$persistCount;
-            },
-        );
-        $unitOfWork->method('flush')->willReturnCallback(
-            static function () use (&$persistCount, &$persistCountsAtFlush): void {
-                $persistCountsAtFlush[] = $persistCount;
+                return $this->sentMessage();
             },
         );
 
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(true);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
+        $handleChatTurn->method('newSessionNotice')->willReturn('новая сессия uuid');
+        $handleChatTurn->expects(self::never())->method('reply');
+
+        $persisted = [];
         $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $this->emptyRepository(),
-            $unitOfWork,
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            unitOfWork: $this->recordingUnitOfWork($persisted),
         )->execute();
 
-        self::assertSame(101, $persistCount);
-        self::assertSame([100, 101], $persistCountsAtFlush);
+        self::assertSame(['новая сессия uuid'], $sent);
+        $processed = array_values(array_filter(
+            $persisted,
+            static fn (object $entity): bool => $entity instanceof ProcessedTelegramMessage,
+        ));
+        self::assertCount(1, $processed);
+        self::assertSame(ProcessedTelegramMessageStatus::ProcessedSuccess, $processed[0]->getStatus());
+        $sessions = array_values(array_filter(
+            $persisted,
+            static fn (object $entity): bool => $entity instanceof ConversationSession,
+        ));
+        self::assertGreaterThanOrEqual(1, count($sessions));
+    }
+
+    public function testOpenCommandRestoresSessionOwnedByThisTelegramChat(): void
+    {
+        $session = new ConversationSession(42);
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
+            $this->incomingMessage(chatId: 42, text: '/open ' . $session->getId()->toRfc4122()),
+        ));
+
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
+
+                return $this->sentMessage();
+            },
+        );
+
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(true);
+        $handleChatTurn->method('parseResumeSessionId')->willReturn($session->getId());
+        $handleChatTurn->method('resumeSessionNotice')->willReturn('сессия восстановлена');
+        $handleChatTurn->expects(self::never())->method('reply');
+
+        $sessions = $this->createStub(ConversationSessionRepository::class);
+        $sessions->method('findById')->willReturn($session);
+
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            conversationSessions: $sessions,
+        )->execute();
+
+        self::assertSame(['сессия восстановлена'], $sent);
+    }
+
+    public function testOpenCommandRejectsForeignOrInvalidSession(): void
+    {
+        $foreign = new ConversationSession(99);
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
+            $this->incomingMessage(updateId: 1, messageId: 1, chatId: 42, text: '/open not-a-uuid'),
+            $this->incomingMessage(
+                updateId: 2,
+                messageId: 2,
+                chatId: 42,
+                text: '/open ' . $foreign->getId()->toRfc4122(),
+            ),
+        ));
+
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
+
+                return $this->sentMessage();
+            },
+        );
+
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(true);
+        $handleChatTurn->method('parseResumeSessionId')->willReturnOnConsecutiveCalls(null, $foreign->getId());
+        $handleChatTurn->expects(self::never())->method('reply');
+
+        $sessions = $this->createStub(ConversationSessionRepository::class);
+        $sessions->method('findById')->willReturn($foreign);
+
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            conversationSessions: $sessions,
+        )->execute();
+
+        self::assertSame(
+            [ChatTurnHandler::ERROR_RESUME_SESSION, ChatTurnHandler::ERROR_RESUME_SESSION],
+            $sent,
+        );
     }
 
     public function testSkipsEmptyTextAndDuplicateAlreadyInDatabase(): void
     {
-        $duplicateIncoming = $this->incomingMessage(updateId: 2, messageId: 20, text: 'повтор');
-
-        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
         $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
             $this->incomingMessage(updateId: 1, messageId: 10, text: null),
-            $duplicateIncoming,
+            $this->incomingMessage(updateId: 2, messageId: 20, text: 'повтор'),
             $this->incomingMessage(updateId: 3, messageId: 30, text: ''),
             $this->incomingMessage(updateId: 4, messageId: 40, chatId: 99, text: 'первый'),
         ));
-        $telegramBotGateway->expects(self::once())->method('sendMessage')->willReturn($this->sentMessage());
 
-        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
-        $neuralNetworkGateway->method('listModels')->willReturn(
-            new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
-        );
-        $neuralNetworkGateway->expects(self::once())
-            ->method('createChatCompletion')
-            ->willReturn(new ChatCompletionResult('id', 'ответ модели'));
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
 
-        $existing = new ProcessedTelegramMessage(
-            chatId: 1,
-            messageId: 20,
-            updateId: 2,
-            sentAt: new DateTimeImmutable(),
-            text: 'уже есть',
+                return $this->sentMessage();
+            },
         );
 
-        $repository = $this->createRepository();
+        $handleChatTurn = $this->successfulChatTurnHandler('ответ агента');
+
+        $repository = $this->createProcessedRepository();
         $repository->method('findMaxUpdateId')->willReturn(null);
         $repository->method('findOneByChatAndMessageId')->willReturnCallback(
-            static function (int $chatId, int $messageId) use ($existing): ?ProcessedTelegramMessage {
+            static function (int $chatId, int $messageId): ?ProcessedTelegramMessage {
                 if ($chatId === 1 && $messageId === 20) {
-                    return $existing;
+                    return new ProcessedTelegramMessage(
+                        chatId: 1,
+                        messageId: 20,
+                        updateId: 2,
+                        sentAt: new DateTimeImmutable(),
+                        text: 'уже есть',
+                    );
                 }
 
                 return null;
@@ -166,219 +257,20 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
         );
 
         $persisted = [];
-        $unitOfWork = $this->createMock(UnitOfWork::class);
-        $unitOfWork->expects(self::once())->method('persist')->willReturnCallback(
-            static function (object $entity) use (&$persisted): void {
-                $persisted[] = $entity;
-            },
-        );
-        $unitOfWork->expects(self::once())->method('flush');
-        $unitOfWork->expects(self::exactly(2))->method('clear');
-
         $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $repository,
-            $unitOfWork,
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            processedRepository: $repository,
+            unitOfWork: $this->recordingUnitOfWork($persisted),
         )->execute();
 
-        self::assertCount(1, $persisted);
-        $message = $persisted[0];
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
-        self::assertSame(99, $message->getChatId());
-        self::assertSame(40, $message->getMessageId());
-        self::assertSame('первый', $message->getText());
+        self::assertSame([ChatTurnHandler::PROCESSING_NOTICE, 'ответ агента'], $sent);
+        $processed = $this->firstProcessed($persisted);
+        self::assertSame(99, $processed->getChatId());
+        self::assertSame('первый', $processed->getText());
     }
 
-    public function testValidationFailureDoesNotCallNeuralNetwork(): void
-    {
-        $text = str_repeat('я', 1025);
-        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
-        $telegramBotGateway->method('getMessages')->willReturn(
-            new IncomingTelegramMessageCollection($this->incomingMessage(text: $text)),
-        );
-        $telegramBotGateway->expects(self::once())
-            ->method('sendMessage')
-            ->with(1, 'запрос слишком длинный сделайте не более 1024 символов')
-            ->willReturn($this->sentMessage());
-
-        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
-        $neuralNetworkGateway->expects(self::never())->method('listModels');
-        $neuralNetworkGateway->expects(self::never())->method('createChatCompletion');
-
-        $persisted = [];
-        $unitOfWork = $this->recordingUnitOfWork($persisted);
-
-        $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $this->emptyRepository(),
-            $unitOfWork,
-        )->execute();
-
-        self::assertCount(1, $persisted);
-        $message = $persisted[0];
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
-        self::assertSame(1024, mb_strlen((string) $message->getText()));
-        self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $message->getStatus());
-        self::assertSame('запрос слишком длинный сделайте не более 1024 символов', $message->getErrorText());
-    }
-
-    public function testNeuralNetworkFailureStoresErrorAndNotifiesUser(): void
-    {
-        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
-        $telegramBotGateway->method('getMessages')->willReturn(
-            new IncomingTelegramMessageCollection($this->incomingMessage()),
-        );
-        $telegramBotGateway->expects(self::once())
-            ->method('sendMessage')
-            ->with(1, 'сервис временно не доступен по пробуйте позднее')
-            ->willReturn($this->sentMessage());
-
-        $neuralNetworkGateway = $this->createNeuralNetworkGateway();
-        $neuralNetworkGateway->method('listModels')->willReturn(
-            new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
-        );
-        $neuralNetworkGateway->method('createChatCompletion')->willThrowException(
-            new NeuralNetworkTransportException('сбой API'),
-        );
-
-        $persisted = [];
-        $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $this->emptyRepository(),
-            $this->recordingUnitOfWork($persisted),
-        )->execute();
-
-        self::assertCount(1, $persisted);
-        $message = $persisted[0];
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
-        self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $message->getStatus());
-        self::assertSame('сервис временно не доступен по пробуйте позднее', $message->getErrorText());
-        self::assertSame('Привет', $message->getText());
-    }
-
-    public function testEmptyNeuralNetworkReplyIsNeuralNetworkFailure(): void
-    {
-        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
-        $telegramBotGateway->method('getMessages')->willReturn(
-            new IncomingTelegramMessageCollection($this->incomingMessage()),
-        );
-        $telegramBotGateway->expects(self::once())
-            ->method('sendMessage')
-            ->with(1, 'сервис временно не доступен по пробуйте позднее')
-            ->willReturn($this->sentMessage());
-
-        $neuralNetworkGateway = $this->createNeuralNetworkGateway();
-        $neuralNetworkGateway->method('listModels')->willReturn(
-            new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
-        );
-        $neuralNetworkGateway->method('createChatCompletion')->willReturn(
-            new ChatCompletionResult('id', null),
-        );
-
-        $persisted = [];
-        $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $this->emptyRepository(),
-            $this->recordingUnitOfWork($persisted),
-        )->execute();
-
-        self::assertCount(1, $persisted);
-        $message = $persisted[0];
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
-        self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $message->getStatus());
-    }
-
-    public function testFailedAiReplyDeliveryNotifiesUser(): void
-    {
-        $telegramBotGateway = $this->createTelegramBotGateway();
-        $telegramBotGateway->method('getMessages')->willReturn(
-            new IncomingTelegramMessageCollection($this->incomingMessage()),
-        );
-        $telegramBotGateway->method('sendMessage')->willReturnCallback(
-            static function (int $chatId, string $text): SentTelegramMessage {
-                if ($text === 'ответ модели') {
-                    throw new TelegramBotTransportException('не доставлено');
-                }
-
-                self::assertSame('сообщение не удалось доставить', $text);
-
-                return new SentTelegramMessage(
-                    messageId: 99,
-                    from: null,
-                    chat: new TelegramChat(
-                        id: $chatId,
-                        type: 'private',
-                        title: null,
-                        username: null,
-                        firstName: null,
-                        lastName: null,
-                        isForum: null,
-                        isDirectMessages: null,
-                    ),
-                    date: 1,
-                    text: $text,
-                );
-            },
-        );
-
-        $neuralNetworkGateway = $this->createNeuralNetworkGateway();
-        $neuralNetworkGateway->method('listModels')->willReturn(
-            new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
-        );
-        $neuralNetworkGateway->method('createChatCompletion')->willReturn(
-            new ChatCompletionResult('id', 'ответ модели'),
-        );
-
-        $persisted = [];
-        $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $this->emptyRepository(),
-            $this->recordingUnitOfWork($persisted),
-        )->execute();
-
-        self::assertCount(1, $persisted);
-        $message = $persisted[0];
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
-        self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $message->getStatus());
-        self::assertSame('сообщение не удалось доставить', $message->getErrorText());
-    }
-
-    public function testErrorNotifySendFailureStillPersistsAndFlushes(): void
-    {
-        $telegramBotGateway = $this->createTelegramBotGateway();
-        $telegramBotGateway->method('getMessages')->willReturn(
-            new IncomingTelegramMessageCollection($this->incomingMessage(text: str_repeat('б', 1025))),
-        );
-        $telegramBotGateway->method('sendMessage')->willThrowException(
-            new TelegramBotTransportException('чат недоступен'),
-        );
-
-        $logger = $this->createMock(LoggerService::class);
-        $logger->expects(self::once())->method('logException');
-
-        $persisted = [];
-        $unitOfWork = $this->recordingUnitOfWork($persisted);
-
-        $this->createUseCase(
-            $telegramBotGateway,
-            $this->createNeuralNetworkGateway(),
-            $this->emptyRepository(),
-            $unitOfWork,
-            $logger,
-        )->execute();
-
-        self::assertCount(1, $persisted);
-        $message = $persisted[0];
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
-        self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $message->getStatus());
-    }
-
-    public function testSuccessPathStoresFullUserTextAndFacts(): void
+    public function testSuccessSendsProcessingNoticeThenReply(): void
     {
         $incoming = $this->incomingMessage(
             updateId: 55,
@@ -391,109 +283,304 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             username: 'anna',
         );
 
-        $telegramBotGateway = $this->createMock(TelegramBotGateway::class);
-        $telegramBotGateway->method('getMessages')->willReturn(
-            new IncomingTelegramMessageCollection($incoming),
-        );
-        $telegramBotGateway->expects(self::once())
-            ->method('sendMessage')
-            ->with(88, 'ответ модели')
-            ->willReturn($this->sentMessage());
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection($incoming));
 
-        $neuralNetworkGateway = $this->createMock(NeuralNetworkGateway::class);
-        $neuralNetworkGateway->expects(self::once())->method('listModels')->willReturn(
-            new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
-        );
-        $neuralNetworkGateway->expects(self::once())
-            ->method('createChatCompletion')
-            ->with(self::callback(static function (ChatCompletionRequest $request): bool {
-                self::assertSame('model-1', $request->model);
-                self::assertSame(
-                    "Короткий вопрос\nответ сделай не больше 1024 символа",
-                    $request->messages->all()[0]->content,
-                );
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = ['chatId' => $chatId, 'text' => $text];
 
-                return true;
-            }))
-            ->willReturn(new ChatCompletionResult('id', 'ответ модели'));
+                return $this->sentMessage();
+            },
+        );
+
+        $session = new ConversationSession(88);
+        $sessions = $this->createStub(ConversationSessionRepository::class);
+        $sessions->method('findCurrentByTelegramChatId')->willReturn($session);
+
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
+        $handleChatTurn->expects(self::once())
+            ->method('reply')
+            ->with($session->getId(), 'Короткий вопрос')
+            ->willReturn($this->successResult('ответ агента'));
+        $handleChatTurn->expects(self::once())->method('rememberTurn')->with($session->getId(), 'Короткий вопрос', 'ответ агента');
 
         $persisted = [];
         $this->createUseCase(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $this->emptyRepository(),
-            $this->recordingUnitOfWork($persisted),
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            conversationSessions: $sessions,
+            unitOfWork: $this->recordingUnitOfWork($persisted),
         )->execute();
 
-        self::assertCount(1, $persisted);
-        $message = $persisted[0];
-        self::assertInstanceOf(ProcessedTelegramMessage::class, $message);
-        self::assertSame(88, $message->getChatId());
-        self::assertSame(77, $message->getMessageId());
-        self::assertSame(55, $message->getUpdateId());
-        self::assertSame('Короткий вопрос', $message->getText());
-        self::assertSame('Анна', $message->getUserFirstName());
-        self::assertSame('Смирнова', $message->getUserLastName());
-        self::assertSame('anna', $message->getUserNickname());
-        self::assertEquals(new DateTimeImmutable('@1700000123'), $message->getSentAt());
-        self::assertSame(ProcessedTelegramMessageStatus::ProcessedSuccess, $message->getStatus());
-        self::assertNull($message->getErrorText());
+        self::assertSame(
+            [
+                ['chatId' => 88, 'text' => ChatTurnHandler::PROCESSING_NOTICE],
+                ['chatId' => 88, 'text' => 'ответ агента'],
+            ],
+            $sent,
+        );
+
+        $processed = $this->firstProcessed($persisted);
+        self::assertSame(88, $processed->getChatId());
+        self::assertSame(77, $processed->getMessageId());
+        self::assertSame(55, $processed->getUpdateId());
+        self::assertSame('Короткий вопрос', $processed->getText());
+        self::assertSame('Анна', $processed->getUserFirstName());
+        self::assertSame(ProcessedTelegramMessageStatus::ProcessedSuccess, $processed->getStatus());
+    }
+
+    public function testLongAnswerIsSentAsNumberedParts(): void
+    {
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(
+            $this->incomingMessage(chatId: 7, text: 'длинный запрос'),
+        ));
+
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
+
+                return $this->sentMessage();
+            },
+        );
+
+        $handleChatTurn = $this->createStub(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('reply')->willReturn(new ChatTurnResult(
+            new ChatTurnMessageCollection(
+                new ChatTurnMessage("1 из 3\n\naaa"),
+                new ChatTurnMessage("2 из 3\n\nbbb"),
+                new ChatTurnMessage("3 из 3\n\nccc"),
+            ),
+            false,
+            'aaabbbccc',
+        ));
+
+        $persisted = [];
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            unitOfWork: $this->recordingUnitOfWork($persisted),
+        )->execute();
+
+        self::assertSame(
+            [
+                ChatTurnHandler::PROCESSING_NOTICE,
+                "1 из 3\n\naaa",
+                "2 из 3\n\nbbb",
+                "3 из 3\n\nccc",
+            ],
+            $sent,
+        );
+    }
+
+    public function testNeuralNetworkFailureStoresErrorAndNotifiesUser(): void
+    {
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(
+            new IncomingTelegramMessageCollection($this->incomingMessage()),
+        );
+
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                $sent[] = $text;
+
+                return $this->sentMessage();
+            },
+        );
+
+        $handleChatTurn = $this->createStub(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('reply')->willReturn(new ChatTurnResult(
+            new ChatTurnMessageCollection(new ChatTurnMessage(ChatTurnHandler::ERROR_NEURAL_NETWORK)),
+            true,
+        ));
+
+        $persisted = [];
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            unitOfWork: $this->recordingUnitOfWork($persisted),
+        )->execute();
+
+        self::assertSame(
+            [ChatTurnHandler::PROCESSING_NOTICE, ChatTurnHandler::ERROR_NEURAL_NETWORK],
+            $sent,
+        );
+        $processed = $this->firstProcessed($persisted);
+        self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $processed->getStatus());
+        self::assertSame(ChatTurnHandler::ERROR_NEURAL_NETWORK, $processed->getErrorText());
+    }
+
+    public function testReplyDeliveryFailureNotifiesUserAndDoesNotRememberTurn(): void
+    {
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(
+            new IncomingTelegramMessageCollection($this->incomingMessage()),
+        );
+
+        $sent = [];
+        $telegramBotGateway->method('sendMessage')->willReturnCallback(
+            function (int $chatId, string $text) use (&$sent): SentTelegramMessage {
+                if ($text === 'ответ агента') {
+                    throw new TelegramBotTransportException('не доставлено');
+                }
+
+                $sent[] = $text;
+
+                return $this->sentMessage();
+            },
+        );
+
+        $handleChatTurn = $this->createMock(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
+        $handleChatTurn->method('reply')->willReturn($this->successResult('ответ агента'));
+        $handleChatTurn->expects(self::never())->method('rememberTurn');
+
+        $persisted = [];
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $handleChatTurn,
+            unitOfWork: $this->recordingUnitOfWork($persisted),
+        )->execute();
+
+        self::assertSame([ChatTurnHandler::PROCESSING_NOTICE, 'сообщение не удалось доставить'], $sent);
+        $processed = $this->firstProcessed($persisted);
+        self::assertSame(ProcessedTelegramMessageStatus::ProcessedError, $processed->getStatus());
+        self::assertSame('сообщение не удалось доставить', $processed->getErrorText());
+    }
+
+    public function testChunkOfHundredFlushesOncePerChunk(): void
+    {
+        $incoming = [];
+        for ($i = 1; $i <= 101; ++$i) {
+            $incoming[] = $this->incomingMessage(updateId: $i, messageId: $i, chatId: $i, text: 'вопрос ' . $i);
+        }
+
+        $telegramBotGateway = $this->createStub(TelegramBotGateway::class);
+        $telegramBotGateway->method('getMessages')->willReturn(new IncomingTelegramMessageCollection(...$incoming));
+        $telegramBotGateway->method('sendMessage')->willReturn($this->sentMessage());
+
+        $flushCallsAtCount = [];
+        $processedCount = 0;
+        $unitOfWork = $this->createStub(UnitOfWork::class);
+        $unitOfWork->method('persist')->willReturnCallback(
+            static function (object $entity) use (&$processedCount): void {
+                if ($entity instanceof ProcessedTelegramMessage) {
+                    ++$processedCount;
+                }
+            },
+        );
+        $unitOfWork->method('flush')->willReturnCallback(
+            static function () use (&$processedCount, &$flushCallsAtCount): void {
+                $flushCallsAtCount[] = $processedCount;
+            },
+        );
+
+        $this->createUseCase(
+            telegramBotGateway: $telegramBotGateway,
+            handleChatTurn: $this->successfulChatTurnHandler('ответ'),
+            unitOfWork: $unitOfWork,
+        )->execute();
+
+        self::assertSame(101, $processedCount);
+        self::assertSame([100, 101], $flushCallsAtCount);
     }
 
     /**
-     * @param list<ProcessedTelegramMessage> $persisted
+     * @param list<object> $persisted
      */
-    private function recordingUnitOfWork(array &$persisted): UnitOfWork&MockObject
+    private function firstProcessed(array $persisted): ProcessedTelegramMessage
     {
-        $unitOfWork = $this->createMock(UnitOfWork::class);
-        $unitOfWork->expects(self::once())->method('persist')->willReturnCallback(
+        foreach ($persisted as $entity) {
+            if ($entity instanceof ProcessedTelegramMessage) {
+                return $entity;
+            }
+        }
+
+        self::fail('No ProcessedTelegramMessage was persisted.');
+    }
+
+    /**
+     * @param list<object> $persisted
+     */
+    private function recordingUnitOfWork(array &$persisted): UnitOfWork&Stub
+    {
+        $unitOfWork = $this->createStub(UnitOfWork::class);
+        $unitOfWork->method('persist')->willReturnCallback(
             static function (object $entity) use (&$persisted): void {
-                self::assertInstanceOf(ProcessedTelegramMessage::class, $entity);
                 $persisted[] = $entity;
             },
         );
-        $unitOfWork->expects(self::once())->method('flush');
-        $unitOfWork->expects(self::exactly(2))->method('clear');
 
         return $unitOfWork;
     }
 
-    private function emptyRepository(): ProcessedTelegramMessageRepository&Stub
+    private function createUseCase(
+        ?TelegramBotGateway $telegramBotGateway = null,
+        ?ProcessedTelegramMessageRepository $processedRepository = null,
+        ?ChatTurnHandler $handleChatTurn = null,
+        ?ConversationSessionRepository $conversationSessions = null,
+        ?UnitOfWork $unitOfWork = null,
+        ?LoggerService $logger = null,
+    ): ProcessIncomingTelegramMessages {
+        return new ProcessIncomingTelegramMessages(
+            $telegramBotGateway ?? $this->createStub(TelegramBotGateway::class),
+            $processedRepository ?? $this->emptyProcessedRepository(),
+            $handleChatTurn ?? $this->successfulChatTurnHandler('ответ агента'),
+            $conversationSessions ?? $this->emptyConversationSessions(),
+            $unitOfWork ?? $this->createStub(UnitOfWork::class),
+            $logger ?? $this->createStub(LoggerService::class),
+        );
+    }
+
+    private function emptyConversationSessions(): ConversationSessionRepository&Stub
     {
-        $repository = $this->createRepository();
+        $repository = $this->createStub(ConversationSessionRepository::class);
+        $repository->method('findCurrentByTelegramChatId')->willReturn(null);
+        $repository->method('findById')->willReturn(null);
+
+        return $repository;
+    }
+
+    private function successfulChatTurnHandler(string $answer): ChatTurnHandler&Stub
+    {
+        $handleChatTurn = $this->createStub(ChatTurnHandler::class);
+        $handleChatTurn->method('isResetCommand')->willReturn(false);
+        $handleChatTurn->method('isResumeCommand')->willReturn(false);
+        $handleChatTurn->method('reply')->willReturn($this->successResult($answer));
+
+        return $handleChatTurn;
+    }
+
+    private function successResult(string $answer): ChatTurnResult
+    {
+        return new ChatTurnResult(
+            new ChatTurnMessageCollection(new ChatTurnMessage($answer)),
+            false,
+            $answer,
+        );
+    }
+
+    private function emptyProcessedRepository(): ProcessedTelegramMessageRepository&Stub
+    {
+        $repository = $this->createProcessedRepository();
         $repository->method('findMaxUpdateId')->willReturn(null);
         $repository->method('findOneByChatAndMessageId')->willReturn(null);
 
         return $repository;
     }
 
-    private function successfulNeuralNetworkGateway(): NeuralNetworkGateway&Stub
+    private function createProcessedRepository(): ProcessedTelegramMessageRepository&Stub
     {
-        $neuralNetworkGateway = $this->createNeuralNetworkGateway();
-        $neuralNetworkGateway->method('listModels')->willReturn(
-            new NeuralNetworkModelCollection(new NeuralNetworkModel('model-1')),
-        );
-        $neuralNetworkGateway->method('createChatCompletion')->willReturn(
-            new ChatCompletionResult('id', 'ответ модели'),
-        );
-
-        return $neuralNetworkGateway;
-    }
-
-    private function createUseCase(
-        TelegramBotGateway $telegramBotGateway,
-        NeuralNetworkGateway $neuralNetworkGateway,
-        ProcessedTelegramMessageRepository $repository,
-        UnitOfWork $unitOfWork,
-        ?LoggerService $logger = null,
-    ): ProcessIncomingTelegramMessages {
-        return new ProcessIncomingTelegramMessages(
-            $telegramBotGateway,
-            $neuralNetworkGateway,
-            $repository,
-            $unitOfWork,
-            $logger ?? $this->createStub(LoggerService::class),
-        );
+        return $this->createStub(ProcessedTelegramMessageRepository::class);
     }
 
     private function incomingMessage(
@@ -552,25 +639,5 @@ final class ProcessIncomingTelegramMessagesTest extends TestCase
             date: 1,
             text: 'ok',
         );
-    }
-
-    private function createTelegramBotGateway(): TelegramBotGateway&Stub
-    {
-        return $this->createStub(TelegramBotGateway::class);
-    }
-
-    private function createNeuralNetworkGateway(): NeuralNetworkGateway&Stub
-    {
-        return $this->createStub(NeuralNetworkGateway::class);
-    }
-
-    private function createRepository(): ProcessedTelegramMessageRepository&Stub
-    {
-        return $this->createStub(ProcessedTelegramMessageRepository::class);
-    }
-
-    private function createUnitOfWork(): UnitOfWork&Stub
-    {
-        return $this->createStub(UnitOfWork::class);
     }
 }

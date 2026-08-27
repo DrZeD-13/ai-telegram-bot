@@ -11,6 +11,7 @@ final readonly class ChatCompletionResultMapper
 {
     public function __construct(
         private ChatCompletionChoiceMapper $choiceMapper,
+        private ToolCallCollectionMapper $toolCallCollectionMapper,
     ) {
     }
 
@@ -21,18 +22,23 @@ final readonly class ChatCompletionResultMapper
      */
     public function map(array $payload): ChatCompletionResult
     {
+        $choice = $this->firstChoice($payload);
+
         return new ChatCompletionResult(
             id: $this->optionalString($payload, 'id'),
-            text: $this->firstChoiceText($payload),
+            text: $choice === null ? null : $this->choiceMapper->map($choice),
+            toolCalls: $choice === null ? null : $this->toolCallCollectionMapper->map($choice),
         );
     }
 
     /**
      * @param array<string, mixed> $payload
      *
+     * @return array<string, mixed>|null
+     *
      * @throws NeuralNetworkTransportException
      */
-    private function firstChoiceText(array $payload): ?string
+    private function firstChoice(array $payload): ?array
     {
         $choices = $payload['choices'] ?? [];
         if (!is_array($choices) || $choices === []) {
@@ -44,7 +50,7 @@ final readonly class ChatCompletionResultMapper
             throw new NeuralNetworkTransportException('Chat completion choices must contain objects.');
         }
 
-        return $this->choiceMapper->map($this->stringKeyed($choice));
+        return $this->stringKeyed($choice);
     }
 
     /**

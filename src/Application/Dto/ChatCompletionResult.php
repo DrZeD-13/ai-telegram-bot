@@ -9,6 +9,12 @@ final readonly class ChatCompletionResult
     public function __construct(
         public ?string $id,
         public ?string $text,
+        public ?ToolCallCollection $toolCalls = null,
     ) {
+    }
+
+    public function hasToolCalls(): bool
+    {
+        return $this->toolCalls !== null && $this->toolCalls->count() > 0;
     }
 }

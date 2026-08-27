@@ -39,6 +39,7 @@ use App\Infrastructure\Transport\NeuralNetwork\Mapper\MessagesResultMapper;
 use App\Infrastructure\Transport\NeuralNetwork\Mapper\NativeChatResultMapper;
 use App\Infrastructure\Transport\NeuralNetwork\Mapper\NativeModelsListMapper;
 use App\Infrastructure\Transport\NeuralNetwork\Mapper\ResponseResultMapper;
+use JsonException;
 use Symfony\Component\DependencyInjection\Attribute\AsAlias;
 use Symfony\Component\DependencyInjection\Attribute\Target;
 use Symfony\Component\Serializer\Normalizer\AbstractObjectNormalizer;
@@ -97,7 +98,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::NativeChat,
-                ['json' => $this->normalizeJson($request)],
+                ['body' => $this->encodeJson($request)],
                 'Failed to run native chat.',
             );
 
@@ -117,7 +118,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::LoadModel,
-                ['json' => $this->normalizeJson(['model' => $modelId])],
+                ['body' => $this->encodeJson(['model' => $modelId])],
                 'Failed to load model.',
             );
 
@@ -137,7 +138,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::DownloadModel,
-                ['json' => $this->normalizeJson(['model' => $modelKey])],
+                ['body' => $this->encodeJson(['model' => $modelKey])],
                 'Failed to start model download.',
             );
 
@@ -191,7 +192,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::CreateResponse,
-                ['json' => $this->normalizeJson($request)],
+                ['body' => $this->encodeJson($request)],
                 'Failed to create response.',
             );
 
@@ -212,7 +213,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::CreateChatCompletion,
-                ['json' => $this->normalizeJson($request)],
+                ['body' => $this->encodeJson($request)],
                 'Failed to create chat completion.',
             );
 
@@ -233,7 +234,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::CreateCompletion,
-                ['json' => $this->normalizeJson($request)],
+                ['body' => $this->encodeJson($request)],
                 'Failed to create completion.',
             );
 
@@ -254,7 +255,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::CreateEmbedding,
-                ['json' => $this->normalizeJson($request)],
+                ['body' => $this->encodeJson($request)],
                 'Failed to create embeddings.',
             );
 
@@ -278,7 +279,7 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
 
             $payload = $this->request(
                 ApiUrlEnum::CreateMessage,
-                ['json' => $this->normalizeJson($request)],
+                ['body' => $this->encodeJson($request)],
                 'Failed to create message.',
             );
 
@@ -375,6 +376,29 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
     /**
      * @param object|array<string, mixed> $data
      *
+     * @throws NeuralNetworkTransportException
+     */
+    private function encodeJson(object|array $data): string
+    {
+        try {
+            return json_encode(
+                $this->utf8Value($this->normalizeJson($data)),
+                JSON_THROW_ON_ERROR
+                | JSON_INVALID_UTF8_SUBSTITUTE
+                | JSON_UNESCAPED_UNICODE
+                | JSON_PRESERVE_ZERO_FRACTION,
+            );
+        } catch (JsonException $exception) {
+            throw new NeuralNetworkTransportException(
+                message: 'Failed to encode neural network request body.',
+                previous: $exception,
+            );
+        }
+    }
+
+    /**
+     * @param object|array<string, mixed> $data
+     *
      * @return array<string, mixed>
      *
      * @throws NeuralNetworkTransportException
@@ -398,6 +422,33 @@ final readonly class NeuralNetworkApiClient implements NeuralNetworkGateway
         }
 
         return $result;
+    }
+
+    private function utf8Value(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $this->utf8String($value);
+        }
+
+        if (is_array($value)) {
+            $result = [];
+            foreach ($value as $key => $item) {
+                $result[is_string($key) ? $this->utf8String($key) : $key] = $this->utf8Value($item);
+            }
+
+            return $result;
+        }
+
+        return $value;
+    }
+
+    private function utf8String(string $value): string
+    {
+        if (mb_check_encoding($value, 'UTF-8')) {
+            return $value;
+        }
+
+        return mb_convert_encoding($value, 'UTF-8', 'UTF-8');
     }
 
     /**

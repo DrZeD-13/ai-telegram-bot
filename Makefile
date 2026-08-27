@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := .docker.loc/docker-compose.yml
 ENV_FILE := .docker.loc/.env
-COMPOSE := docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE)
+COMPOSE := BUILDKIT_PROGRESS=plain docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE)
 
 APP_ID := $(shell grep '^SERVICE_NAME=' $(ENV_FILE) 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')
 

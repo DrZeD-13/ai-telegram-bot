@@ -9,6 +9,7 @@ final readonly class ChatCompletionRequest
     public function __construct(
         public string $model,
         public ChatMessageCollection $messages,
+        public ?ToolDefinitionCollection $tools = null,
         public bool $stream = false,
     ) {
     }

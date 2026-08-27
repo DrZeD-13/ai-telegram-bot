@@ -12,6 +12,8 @@ use App\Application\Dto\CreateResponseRequest;
 use App\Application\Dto\EmbeddingRequest;
 use App\Application\Dto\MessagesRequest;
 use App\Application\Dto\NativeChatRequest;
+use App\Application\Dto\ToolDefinition;
+use App\Application\Dto\ToolDefinitionCollection;
 use App\Application\Exception\NeuralNetworkConfigurationException;
 use App\Application\Exception\NeuralNetworkTransportException;
 use App\Application\Exception\NeuralNetworkValidationException;
@@ -35,6 +37,7 @@ use App\Infrastructure\Transport\NeuralNetwork\Mapper\NativeModelsListMapper;
 use App\Infrastructure\Transport\NeuralNetwork\Mapper\NeuralNetworkModelMapper;
 use App\Infrastructure\Transport\NeuralNetwork\Mapper\ResponseOutputTextMapper;
 use App\Infrastructure\Transport\NeuralNetwork\Mapper\ResponseResultMapper;
+use App\Infrastructure\Transport\NeuralNetwork\Mapper\ToolCallCollectionMapper;
 use App\Infrastructure\Transport\NeuralNetwork\NeuralNetworkApiClient;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversMethod;
@@ -333,6 +336,104 @@ final class NeuralNetworkApiClientTest extends TestCase
 
         self::assertSame('cmpl-1', $result->id);
         self::assertSame('hello', $result->text);
+        self::assertFalse($result->hasToolCalls());
+    }
+
+    public function testCreateChatCompletionEncodesInvalidUtf8InsteadOfFailing(): void
+    {
+        $httpClient = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+            self::assertSame('POST', $method);
+            $body = self::jsonBody($options);
+            self::assertSame('gpt-4', $body['model']);
+            self::assertIsArray($body['messages']);
+            self::assertArrayHasKey(0, $body['messages']);
+            $message = $body['messages'][0];
+            self::assertIsArray($message);
+            self::assertIsString($message['content']);
+            self::assertTrue(mb_check_encoding($message['content'], 'UTF-8'));
+            self::assertStringStartsWith('hi', $message['content']);
+
+            return new MockResponse(
+                json_encode([
+                    'id' => 'cmpl-utf8',
+                    'choices' => [
+                        ['message' => ['role' => 'assistant', 'content' => 'ok']],
+                    ],
+                ], JSON_THROW_ON_ERROR),
+                ['http_code' => 200],
+            );
+        });
+
+        $result = $this->createClient($httpClient)->createChatCompletion(new ChatCompletionRequest(
+            'gpt-4',
+            new ChatMessageCollection(new ChatMessage('user', "hi\xFF\xFEbroken")),
+        ));
+
+        self::assertSame('cmpl-utf8', $result->id);
+        self::assertSame('ok', $result->text);
+    }
+
+    public function testCreateChatCompletionSendsToolsAndMapsToolCalls(): void
+    {
+        $httpClient = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+            self::assertSame('POST', $method);
+            $body = self::jsonBody($options);
+            self::assertSame('gpt-4', $body['model']);
+            self::assertIsArray($body['messages']);
+            self::assertArrayHasKey(0, $body['messages']);
+            $userMessage = $body['messages'][0];
+            self::assertIsArray($userMessage);
+            self::assertSame('привет меня зовут Павел, а тебя как?', $userMessage['content']);
+            self::assertIsArray($body['tools']);
+            self::assertArrayHasKey(0, $body['tools']);
+            $firstTool = $body['tools'][0];
+            self::assertIsArray($firstTool);
+            self::assertSame('function', $firstTool['type']);
+            self::assertIsArray($firstTool['function']);
+            self::assertSame('shell', $firstTool['function']['name']);
+            self::assertSame(
+                'Выполнить команду в shell (оболочке) хоста и получить stdout, stderr и код возврата.',
+                $firstTool['function']['description'],
+            );
+
+            return new MockResponse(
+                json_encode([
+                    'id' => 'cmpl-tools',
+                    'choices' => [
+                        [
+                            'message' => [
+                                'role' => 'assistant',
+                                'content' => null,
+                                'tool_calls' => [
+                                    [
+                                        'id' => 'call_1',
+                                        'type' => 'function',
+                                        'function' => ['name' => 'shell', 'arguments' => '{"command":"ls"}'],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ], JSON_THROW_ON_ERROR),
+                ['http_code' => 200],
+            );
+        });
+
+        $result = $this->createClient($httpClient)->createChatCompletion(new ChatCompletionRequest(
+            model: 'gpt-4',
+            messages: new ChatMessageCollection(new ChatMessage('user', 'привет меня зовут Павел, а тебя как?')),
+            tools: new ToolDefinitionCollection(new ToolDefinition(
+                name: 'shell',
+                description: 'Выполнить команду в shell (оболочке) хоста и получить stdout, stderr и код возврата.',
+                parameters: ['type' => 'object'],
+            )),
+        ));
+
+        self::assertSame('cmpl-tools', $result->id);
+        self::assertTrue($result->hasToolCalls());
+        self::assertNotNull($result->toolCalls);
+        self::assertSame('call_1', $result->toolCalls->all()[0]->id);
+        self::assertSame('shell', $result->toolCalls->all()[0]->name);
     }
 
     public function testCreateChatCompletionRejectsEmptyMessagesWithoutHttpCall(): void
@@ -603,7 +704,7 @@ final class NeuralNetworkApiClientTest extends TestCase
             new DownloadJobMapper(),
             new DownloadStatusMapper(),
             new ResponseResultMapper(new ResponseOutputTextMapper()),
-            new ChatCompletionResultMapper($choiceMapper),
+            new ChatCompletionResultMapper($choiceMapper, new ToolCallCollectionMapper()),
             new CompletionResultMapper(new CompletionChoiceMapper()),
             new EmbeddingVectorCollectionMapper(new EmbeddingVectorMapper()),
             new MessagesResultMapper(new MessagesContentBlockMapper()),
